@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Scanline overlay */
+.scanline-overlay {
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 60, 0.015) 2px,
+    rgba(0, 255, 60, 0.015) 4px
+  );
+  pointer-events: none;
+}
+
+/* Military popup dark theme */
+.military-popup .mapboxgl-popup-content {
+  background: rgba(9, 9, 11, 0.95);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 2px;
+  padding: 10px 12px;
+  font-family: 'Courier New', monospace;
+  color: #4ade80;
+  min-width: 200px;
+  box-shadow: 0 0 20px rgba(74, 222, 128, 0.1);
+}
+
+.military-popup .mapboxgl-popup-tip {
+  border-top-color: rgba(74, 222, 128, 0.3);
+  border-bottom-color: rgba(74, 222, 128, 0.3);
+}
+
+.military-popup .mapboxgl-popup-close-button {
+  color: #4ade80;
+  font-size: 16px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+}
+
+.military-popup .mapboxgl-popup-close-button:hover {
+  background: rgba(74, 222, 128, 0.1);
+  color: #86efac;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(74, 222, 128, 0.3);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 222, 128, 0.5);
+}
+
+/* Mapbox attribution dark */
+.mapboxgl-ctrl-attrib {
+  background: rgba(9, 9, 11, 0.8) !important;
+  color: rgba(74, 222, 128, 0.4) !important;
+}
+
+.mapboxgl-ctrl-attrib a {
+  color: rgba(74, 222, 128, 0.6) !important;
+}
+
+/* No outline on map canvas */
+.mapboxgl-canvas:focus {
+  outline: none;
+}
