@@ -241,6 +241,7 @@ const ADSBLOL_URL = 'https://api.airplanes.live/v2/point/32/44.5/1500'
 // ICAO Doc 7910 registration prefix → country name (longest prefix matched first)
 const REG_PREFIX_COUNTRY = {
   // 3-char
+  'A4O': 'Oman',
   'A9C': 'Bahrain',
   // 2-char
   '4K': 'Azerbaijan',
@@ -255,6 +256,7 @@ const REG_PREFIX_COUNTRY = {
   '5Y': 'Kenya',
   '6V': 'Senegal', '6W': 'Senegal',
   '7T': 'Algeria',
+  '9H': 'Malta',
   '9K': 'Kuwait',
   '9M': 'Malaysia',
   '9V': 'Singapore',
@@ -264,6 +266,8 @@ const REG_PREFIX_COUNTRY = {
   'D2': 'Angola',
   'D4': 'Cape Verde',
   'D6': 'Comoros',
+  'EC': 'Spain',
+  'EI': 'Ireland',
   'EP': 'Iran, Islamic Republic of',
   'ER': 'Moldova',
   'ES': 'Estonia',
@@ -276,6 +280,7 @@ const REG_PREFIX_COUNTRY = {
   'HB': 'Switzerland',
   'HK': 'Colombia',
   'HL': 'Korea, Republic of',
+  'HS': 'Thailand',
   'HZ': 'Saudi Arabia',
   'J2': 'Djibouti',
   'JA': 'Japan',
@@ -303,6 +308,7 @@ const REG_PREFIX_COUNTRY = {
   'TF': 'Iceland',
   'TJ': 'Cameroon',
   'TN': 'Congo',
+  'T7': 'San Marino',
   'TS': 'Tunisia',
   'UK': 'Uzbekistan',
   'UN': 'Kazakhstan',

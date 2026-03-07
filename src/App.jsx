@@ -51,16 +51,12 @@ function formatTZ(date, tz) {
   return _tzFmt[tz].format(date)
 }
 
-/** ISO alpha-2 → flag emoji via Regional Indicator characters (U+1F1E6…) */
-// Track requested flag IDs to avoid duplicate loadImage calls
+// Preload all country flags in parallel at map init — avoids 1+ min lazy trickle.
 const _flagRequested = new Set()
 
-/** Async load flag PNG from CDN — non-blocking, browser-cached. */
-function ensureAircraftLabels(aircraft, map) {
-  if (!map?.isStyleLoaded()) return
-  aircraft.forEach(ac => {
-    const code = COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || ''
-    if (!code) return
+function preloadAllFlags(map) {
+  const codes = [...new Set(Object.values(COUNTRY_CODE))]
+  codes.forEach(code => {
     const id = `flag-${code}`
     if (map.hasImage(id) || _flagRequested.has(id)) return
     _flagRequested.add(id)
@@ -70,6 +66,9 @@ function ensureAircraftLabels(aircraft, map) {
     )
   })
 }
+
+// No-op kept for call sites — flags are preloaded at map init.
+function ensureAircraftLabels(_aircraft, _map) {}
 
 // Civilian airliner — top-down silhouette (wide body, swept wings + stabilizers)
 function makeCivilianSVG(color) {
@@ -236,6 +235,7 @@ const COUNTRY_CODE = {
   'Somalia':'SO','Federal Republic of Somalia':'SO',
   'South Africa':'ZA','Republic of South Africa':'ZA',
   'South Sudan':'SS','Republic of South Sudan':'SS',
+  'San Marino':'SM','Republic of San Marino':'SM',
   'Spain':'ES','Kingdom of Spain':'ES',
   'Sri Lanka':'LK','Democratic Socialist Republic of Sri Lanka':'LK',
   'Sudan':'SD','Republic of the Sudan':'SD','Republic of Sudan':'SD',
@@ -633,6 +633,7 @@ export default function App() {
   const animToRef = useRef([])      // target aircraft list
   const liveIntervalMsRef = useRef(100000) // measured interval between aircraft:update events
   const lastAircraftUpdateRef = useRef(null)
+  const pendingAirportsRef = useRef(null)   // airports received before map was ready
 
   useEffect(() => { activeRegionRef.current = activeRegion }, [activeRegion])
   useEffect(() => { aircraftFilterRef.current = aircraftFilter }, [aircraftFilter])
@@ -652,6 +653,20 @@ export default function App() {
     map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
     map.getSource('fire-source')?.setData(toGeoJSONFires(filteredFires))
     setCounts({ aircraft: filtered.length, fires: filteredFires.length })
+  }, [])
+
+  const applyAirports = useCallback((data, map) => {
+    map.getSource('airport-source')?.setData({
+      type: 'FeatureCollection',
+      features: data.map(a => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: a.coords },
+        properties: {
+          id: a.id, name: a.name, iata: a.iata, icao: a.icao,
+          type: a.type, municipality: a.municipality, elevation: a.elevation,
+        },
+      })),
+    })
   }, [])
 
   const clearMapData = useCallback(() => {
@@ -890,8 +905,13 @@ export default function App() {
         bindPopup('airport-other-circle-layer', buildAirportPopupHTML)
 
         setMapLoaded(true)
+        preloadAllFlags(map)
 
-        // Airports loaded via WebSocket airports:update on connect
+        // Apply airports that arrived before the map was ready
+        if (pendingAirportsRef.current) {
+          applyAirports(pendingAirportsRef.current, map)
+          pendingAirportsRef.current = null
+        }
       })
     })
 
@@ -903,20 +923,6 @@ export default function App() {
 
   // ── 3. Socket.io ──────────────────────────────────────────────────────────
   useEffect(() => {
-    // Show mock data immediately in live mode so map isn't empty while connecting
-    if (dataModeRef.current === 'live') {
-      const center = REGIONS[activeRegionRef.current].center
-      const initAircraft = generateAircraft(center)
-      const initFires    = generateFires(center)
-      animCurrentRef.current = {}
-      initAircraft.forEach(ac => {
-        animCurrentRef.current[ac.id] = { lat: ac.lat, lon: ac.lon, heading: ac.heading, headingRate: 0, currentSpeed: 0 }
-      })
-      animToRef.current = initAircraft
-      aircraftDataRef.current = initAircraft
-      fireDataRef.current = initFires
-    }
-
     const socket = io(BACKEND_URL, {
       transports: ['websocket'],
       reconnection: true,
@@ -983,19 +989,11 @@ export default function App() {
     socket.on('airports:update', (data) => {
       if (!data?.length) return
       const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) return
-      const geojson = {
-        type: 'FeatureCollection',
-        features: data.map(a => ({
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: a.coords },
-          properties: {
-            id: a.id, name: a.name, iata: a.iata, icao: a.icao,
-            type: a.type, municipality: a.municipality, elevation: a.elevation,
-          },
-        })),
+      if (!map?.isStyleLoaded()) {
+        pendingAirportsRef.current = data
+        return
       }
-      map.getSource('airport-source')?.setData(geojson)
+      applyAirports(data, map)
     })
 
     return () => {
@@ -1199,6 +1197,9 @@ export default function App() {
 
   function mockClear() {
     clearInterval(mockIntervalRef.current)
+    stopAnimLoop()
+    animCurrentRef.current = {}
+    animToRef.current = []
     mockStateRef.current = 'stopped'
     setMockState('stopped')
     clearMapData()
