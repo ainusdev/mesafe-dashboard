@@ -51,6 +51,58 @@ function formatTZ(date, tz) {
   return _tzFmt[tz].format(date)
 }
 
+/** ISO alpha-2 → flag emoji via Regional Indicator characters (U+1F1E6…) */
+function isoToFlagEmoji(code) {
+  return [...code.toUpperCase()].map(c =>
+    String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65)
+  ).join('')
+}
+
+/** Render [callsign  🇹🇷] as a single canvas image — bypasses Mapbox SDF font limit. */
+function makeAircraftLabelImage(callsign, isoCode, isMilitary) {
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')
+  const fs = 11
+  const csColor = isMilitary ? '#ef4444' : '#4ade80'
+  const flagEmoji = isoCode ? isoToFlagEmoji(isoCode) : ''
+
+  ctx.font = `${fs}px "Courier New", monospace`
+  const csW = Math.ceil(ctx.measureText(callsign).width)
+  const gap = isoCode ? 3 : 0
+  const flagW = isoCode ? Math.ceil(fs * 1.4) : 0
+  const w = csW + gap + flagW + 2
+  const h = fs + 4
+
+  canvas.width = w
+  canvas.height = h
+
+  ctx.font = `${fs}px "Courier New", monospace`
+  ctx.textBaseline = 'middle'
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'
+  ctx.shadowBlur = 2
+  ctx.fillStyle = csColor
+  ctx.fillText(callsign, 1, h / 2)
+
+  if (isoCode) {
+    ctx.shadowBlur = 0
+    ctx.font = `${flagW}px sans-serif`
+    ctx.fillText(flagEmoji, csW + gap + 1, h / 2)
+  }
+
+  return { width: w, height: h, data: new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer) }
+}
+
+/** Register any missing aircraft label images into the Mapbox map instance. */
+function ensureAircraftLabels(aircraft, map) {
+  if (!map?.isStyleLoaded()) return
+  aircraft.forEach(ac => {
+    const cs = (ac.callsign || '').trim()
+    const code = COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || ''
+    const id = `lbl-${cs}-${code}-${ac.military ? 1 : 0}`
+    if (!map.hasImage(id)) map.addImage(id, makeAircraftLabelImage(cs, code, !!ac.military))
+  })
+}
+
 // Civilian airliner — top-down silhouette (wide body, swept wings + stabilizers)
 function makeCivilianSVG(color) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
@@ -75,31 +127,45 @@ function makeMilitarySVG(color) {
   )}`
 }
 
-// Civilian callsigns (airline code + flight number → trip.com link works)
 const CALLSIGNS_CIVILIAN = [
-  'EK471','EK828','FZ204','QR541','QR007','EY302','MS903',
-  'GF452','TK788','GF103','SV872','WY513','ME342',
+  'EK471','EK828','EK204','FZ204','FZ317',
+  'QR541','QR007','QR342','EY302','EY451',
+  'MS903','GF452','TK788','TK124','SV872',
+  'WY513','ME342','GF103','RJ103','PC572',
+  'KAL001','KAL851','KAL958','AAR271','AAR603','JJA151','ABL661',
 ]
-// Korean carrier callsigns
-const CALLSIGNS_KOREAN = [
-  'KAL001','KAL851','KAL958','AAR271','AAR603','JJA151','JJA225','ABL661',
-]
-// Military callsigns
 const CALLSIGNS_MILITARY = [
   'EAGLE-1','EAGLE-2','VIPER-1','VIPER-3','HAWK-7','HAWK-9',
   'COBRA-2','COBRA-4','FALCON-5','GHOST-3','RAVEN-2','WOLF-1',
-]
-// Private jets — hex IDs (no real callsign → shows as private)
-const CALLSIGNS_PRIVATE = [
-  '740123','896185','a3f200','730b4c','710e91','ae1234','3a8bc0',
+  'REACH-1','SPAR-21','DOOM-4','DUKE-7',
 ]
 
-const KOREAN_AIRPORT_CODES = new Set(['RKSI','RKSS','RKPK','RKTN','RKJJ','ICN','GMP','PUS','TAE','CJU'])
-const KOREAN_CARRIER_PREFIXES = ['KAL','AAR','JJA','ABL','TWB','ESR']
-
-function isRealCallsign(callsign) {
-  return /^[A-Z]{2,3}\d{1,4}[A-Z]?$/i.test((callsign || '').trim())
+// Country name → ISO 3166-1 alpha-2 code.
+// Flag emoji is rendered via canvas → Mapbox image (bypasses SDF font limitation).
+const COUNTRY_CODE = {
+  'Afghanistan':'AF','Albania':'AL','Algeria':'DZ','Armenia':'AM',
+  'Australia':'AU','Austria':'AT','Azerbaijan':'AZ',
+  'Bahrain':'BH','Bangladesh':'BD','Belarus':'BY','Belgium':'BE','Brazil':'BR','Bulgaria':'BG',
+  'Canada':'CA','China':'CN','Croatia':'HR','Cyprus':'CY','Czech Republic':'CZ',
+  'Denmark':'DK','Egypt':'EG','Estonia':'EE','Ethiopia':'ET',
+  'Finland':'FI','France':'FR','Georgia':'GE','Germany':'DE','Greece':'GR',
+  'Hungary':'HU','India':'IN','Indonesia':'ID','Iran':'IR','Iraq':'IQ',
+  'Ireland':'IE','Israel':'IL','Italy':'IT','Japan':'JP','Jordan':'JO',
+  'Kazakhstan':'KZ','Kenya':'KE','Kuwait':'KW','Kyrgyzstan':'KG',
+  'Latvia':'LV','Lebanon':'LB','Libya':'LY','Lithuania':'LT','Luxembourg':'LU',
+  'Malaysia':'MY','Malta':'MT','Mexico':'MX','Moldova':'MD','Morocco':'MA',
+  'Netherlands':'NL','Norway':'NO','Oman':'OM',
+  'Pakistan':'PK','Palestine':'PS','Poland':'PL','Portugal':'PT',
+  'Qatar':'QA','Romania':'RO','Russia':'RU',
+  'Saudi Arabia':'SA','Serbia':'RS','Singapore':'SG','Slovakia':'SK',
+  'Slovenia':'SI','Somalia':'SO','South Africa':'ZA','South Korea':'KR',
+  'Spain':'ES','Sudan':'SD','Sweden':'SE','Switzerland':'CH','Syria':'SY',
+  'Taiwan':'TW','Tajikistan':'TJ','Thailand':'TH','Tunisia':'TN',
+  'Turkey':'TR','Türkiye':'TR','Turkmenistan':'TM',
+  'Ukraine':'UA','United Arab Emirates':'AE','United Kingdom':'GB','United States':'US',
+  'Uzbekistan':'UZ','Yemen':'YE',
 }
+
 
 // ─── Pure utility functions ────────────────────────────────────────────────
 
@@ -112,45 +178,62 @@ function offsetCoord(center, rangeKm) {
   return [center[0] + rand(-rangeKm, rangeKm) * d, center[1] + rand(-rangeKm, rangeKm) * d]
 }
 
+function randHex(len) {
+  return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+}
+
 function generateAircraft(center) {
   const count = randInt(20, 30)
-  return Array.from({ length: count }, (_, i) => {
-    const r = Math.random()
-    // ~20% military, ~15% private, ~15% Korean carrier, ~50% civilian
-    const isMilitary = r < 0.20
-    const isPrivate  = r < 0.35 && !isMilitary
-    const isKorean   = r < 0.50 && !isMilitary && !isPrivate
+  return Array.from({ length: count }, () => {
+    const isMilitary = Math.random() < 0.20
 
-    let callsign, route, actype
+    let callsign, route, actype, originCountry, speedKts, altFt
+
     if (isMilitary) {
-      callsign = randItem(CALLSIGNS_MILITARY)
-      actype   = randItem(['F-16','F-15','C-130','B-52','MQ-9','UH-60'])
-      route    = null
-    } else if (isPrivate) {
-      callsign = randItem(CALLSIGNS_PRIVATE)
-      actype   = randItem(['G650','C560','PC12','E135'])
-      route    = null
-    } else if (isKorean) {
-      callsign = randItem(CALLSIGNS_KOREAN)
-      actype   = randItem(['B77W','A380','B787','A330'])
-      route    = Math.random() < 0.8 ? randItem(['DOH→ICN','DXB→ICN','MCT→GMP','AUH→ICN','RUH→ICN','AMM→ICN']) : null
+      callsign      = randItem(CALLSIGNS_MILITARY)
+      actype        = randItem(['F-16','F-15','C-130','KC-135','MQ-9','UH-60'])
+      route         = null
+      originCountry = randItem(['United States','United Kingdom','Israel','France','Germany'])
+      speedKts      = randInt(300, 600)
+      altFt         = randInt(1000, 35000)
     } else {
-      callsign = randItem(CALLSIGNS_CIVILIAN)
-      actype   = randItem(['B77W','A320','A330','B737','A321'])
-      route    = Math.random() < 0.6 ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','MCT→BOM']) : null
+      callsign      = randItem(CALLSIGNS_CIVILIAN)
+      actype        = randItem(['B77W','A320','A330','B737','A321','B787','A380'])
+      route         = Math.random() < 0.65
+        ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','MCT→BOM','DOH→ICN','DXB→ICN','RUH→ICN','AMM→ICN'])
+        : null
+      originCountry = randItem(['Turkey','United Arab Emirates','Saudi Arabia','Qatar','Egypt','Germany','United Kingdom','India','Pakistan','Iran','Jordan','Greece','Russia','South Korea'])
+      speedKts      = randInt(400, 560)
+      altFt         = randInt(28000, 43000)
     }
 
+    const coords = offsetCoord(center, 200)
     return {
-      id: `ac-${Date.now()}-${i}`,
-      coords: offsetCoord(center, 200),
-      heading: rand(0, 360),
-      speed: rand(0.008, 0.018),
+      // OpenSky-compatible fields
+      id:              randHex(6),          // icao24
       callsign,
-      altitude: randInt(isMilitary ? 1000 : 20000, 45000),
+      origin_country:  originCountry,
+      time_position:   Math.floor(Date.now() / 1000),
+      last_contact:    Math.floor(Date.now() / 1000),
+      lon:             coords[0],
+      lat:             coords[1],
+      coords,
+      baro_altitude:   Math.round(altFt * 0.3048),  // metres
+      on_ground:       false,
+      velocity:        Math.round(speedKts * 0.514444),  // m/s
+      true_track:      Math.round(rand(0, 360)),
+      vertical_rate:   Math.round(rand(-5, 5)),
+      squawk:          Math.floor(Math.random() * 8000).toString().padStart(4, '0'),
+      position_source: 0,  // ADS-B
+      // App fields
+      altitude:        altFt,
+      speed:           speedKts,
+      heading:         Math.round(rand(0, 360)),
       actype,
-      military: isMilitary,
+      military:        isMilitary,
       route,
-      registration: '',
+      registration:    '',
+      originCountry,
     }
   })
 }
@@ -178,19 +261,23 @@ function generateFires(center) {
 function tickAircraft(aircraft, center) {
   const d = 1 / 111
   const bound = 220
+  const speedDeg = 0.012  // ~1.3km/s in degrees
   return aircraft.map(ac => {
-    const heading = (ac.heading + rand(-5, 5) + 360) % 360
+    const heading = (ac.heading + rand(-3, 3) + 360) % 360
     const rad = (heading - 90) * (Math.PI / 180)
     const coords = [
-      ac.coords[0] + Math.cos(rad) * ac.speed,
-      ac.coords[1] + Math.sin(rad) * ac.speed,
+      ac.coords[0] + Math.cos(rad) * speedDeg,
+      ac.coords[1] + Math.sin(rad) * speedDeg,
     ]
     const outOfBounds =
       Math.abs(coords[0] - center[0]) / d > bound ||
       Math.abs(coords[1] - center[1]) / d > bound
-    return outOfBounds
-      ? { ...ac, coords: offsetCoord(center, 180), heading: rand(0, 360) }
-      : { ...ac, coords, heading }
+    const now = Math.floor(Date.now() / 1000)
+    if (outOfBounds) {
+      const c = offsetCoord(center, 180)
+      return { ...ac, coords: c, lon: c[0], lat: c[1], heading: rand(0, 360), time_position: now, last_contact: now }
+    }
+    return { ...ac, coords, lon: coords[0], lat: coords[1], heading, time_position: now, last_contact: now }
   })
 }
 
@@ -241,14 +328,6 @@ function getFilteredFires(data, hours) {
   return data.filter(f => !f.acqTimestamp || f.acqTimestamp >= cutoff)
 }
 
-function isKoreaBound(ac) {
-  if (ac.route) {
-    const dest = ac.route.split('→').pop().trim().toUpperCase()
-    if (KOREAN_AIRPORT_CODES.has(dest)) return true
-  }
-  const cs = (ac.callsign || '').toUpperCase()
-  return KOREAN_CARRIER_PREFIXES.some(p => cs.startsWith(p))
-}
 
 function toGeoJSONAircraft(data) {
   return {
@@ -264,10 +343,11 @@ function toGeoJSONAircraft(data) {
         speed: ac.speed || 0,
         actype: ac.actype || 'UNKNOWN',
         military: ac.military ? 1 : 0,
-        korean: isKoreaBound(ac) ? 1 : 0,
-        hasCallsign: isRealCallsign(ac.callsign) ? 1 : 0,
         route: ac.route || '',
         registration: ac.registration || '',
+        originCountry: ac.originCountry || ac.origin_country || '',
+        countryCode: COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || '',
+        labelKey: `lbl-${(ac.callsign || '').trim()}-${COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || ''}-${ac.military ? 1 : 0}`,
       },
     })),
   }
@@ -294,11 +374,9 @@ function toGeoJSONFires(data) {
 }
 
 function buildAircraftPopupHTML(props) {
-  const isKorean  = props.korean      === 1 || props.korean      === true
-  const isMil     = props.military    === 1 || props.military    === true
-  const isPrivate = props.hasCallsign === 0 || props.hasCallsign === false
-  const acColor = isMil ? '#ef4444' : isPrivate ? '#c4b5fd' : '#4ade80'
-  const acLabel = isMil ? '🔴 MILITARY' : isKorean ? '🇰🇷 KOREAN CARRIER' : isPrivate ? '🟣 PRIVATE JET' : '🟢 CIVILIAN'
+  const isMil   = props.military === 1 || props.military === true
+  const acColor = isMil ? '#ef4444' : '#4ade80'
+  const acLabel = isMil ? '🔴 MILITARY' : '🟢 CIVILIAN'
   const altFt = typeof props.altitude === 'number' ? props.altitude.toLocaleString() : props.altitude
   const spd = typeof props.speed === 'number' ? `${Math.round(props.speed)} kts` : '—'
 
@@ -309,33 +387,21 @@ function buildAircraftPopupHTML(props) {
         ✈ ${props.callsign || '???'}
       </div>
       <div style="color:#9ca3af;font-size:10px;margin-bottom:6px">${acLabel}</div>
+      <div><span style="color:#6b7280">COUNTRY:</span> ${props.originCountry || '—'}</div>
       <div><span style="color:#6b7280">ROUTE:</span> <span style="color:#fbbf24">${props.route || '—'}</span></div>
       ${props.registration ? `<div><span style="color:#6b7280">REG:</span> ${props.registration}</div>` : ''}
       <div><span style="color:#6b7280">TYPE:</span> ${props.actype || '—'}</div>
       <div><span style="color:#6b7280">ALT:</span> ${altFt} ft</div>
       <div><span style="color:#6b7280">SPD:</span> ${spd}</div>
       <div><span style="color:#6b7280">HDG:</span> ${Math.round(props.heading || 0)}°</div>
-      ${(() => {
-        const cs = (props.callsign || '').trim()
-        if (/^[A-Z]{2}\d{1,4}[A-Z]?$/i.test(cs)) {
-          return `<div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
-            <a href="https://www.trip.com/flights/status-${cs.toLowerCase()}/"
-              target="_blank" rel="noopener noreferrer"
-              style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
-              ↗ 스케줄 보기 (trip.com)
-            </a>
-          </div>`
-        } else if (/^[A-Z]{3}\d{1,4}[A-Z]?$/i.test(cs)) {
-          return `<div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
-            <a href="https://www.flightaware.com/live/flight/${cs.toUpperCase()}"
-              target="_blank" rel="noopener noreferrer"
-              style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
-              ↗ 스케줄 보기 (FlightAware)
-            </a>
-          </div>`
-        }
-        return ''
-      })()}
+      ${/^[A-Z]{2,3}\d{1,4}[A-Z]?$/i.test((props.callsign || '').trim()) ? `
+      <div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
+        <a href="https://www.flightaware.com/live/flight/${(props.callsign || '').trim().toUpperCase()}"
+          target="_blank" rel="noopener noreferrer"
+          style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
+          ↗ 스케줄 보기 (FlightAware)
+        </a>
+      </div>` : ''}
       <div style="margin-top:5px;color:rgba(74,222,128,0.4);font-size:10px">ADS-B // SIMULATED DATA</div>
     </div>`
 }
@@ -394,12 +460,10 @@ function buildAirportPopupHTML(props) {
       <div><span style="color:#6b7280">TYPE:</span> <span style="color:${typeColor}">${typeLabel}</span></div>
       <div><span style="color:#6b7280">ELEV:</span> ${props.elevation ? props.elevation + ' ft' : '—'}</div>
       <div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
-        <a href="${props.iata
-          ? `https://www.trip.com/flights/status/${props.iata.toLowerCase()}/`
-          : `https://www.flightaware.com/live/airport/${props.icao}`
-        }" target="_blank" rel="noopener noreferrer"
+        <a href="https://www.flightaware.com/live/airport/${props.iata || props.icao}"
+          target="_blank" rel="noopener noreferrer"
           style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
-          ↗ 취항노선 보기 (trip.com)
+          ↗ 취항노선 보기 (FlightAware)
         </a>
       </div>
     </div>`
@@ -423,7 +487,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [dataMode, setDataMode] = useState('live')       // 'live' | 'mock'
   const [mockState, setMockState] = useState('stopped')  // 'stopped' | 'running'
-  const [koreaBoundList, setKoreaBoundList] = useState([])
 
   const mapRef = useRef(null)
   const mapInstanceRef = useRef(null)
@@ -454,10 +517,10 @@ export default function App() {
     if (!map?.isStyleLoaded()) return
     const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
     const filteredFires = getFilteredFires(fireDataRef.current, fireHoursFilterRef.current)
+    ensureAircraftLabels(filtered, map)
     map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
     map.getSource('fire-source')?.setData(toGeoJSONFires(filteredFires))
     setCounts({ aircraft: filtered.length, fires: filteredFires.length })
-    setKoreaBoundList(filtered.filter(isKoreaBound))
   }, [])
 
   const clearMapData = useCallback(() => {
@@ -508,8 +571,6 @@ export default function App() {
       Promise.all([
         loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80'),
         loadIcon('aircraft-military', makeMilitarySVG, '#ef4444'),
-        loadIcon('aircraft-korean',   makeCivilianSVG, '#f59e0b'),
-        loadIcon('aircraft-private',  makeCivilianSVG, '#c4b5fd'),
       ]).then(() => {
         // ── Aircraft ──
         map.addSource('aircraft-source', {
@@ -522,32 +583,27 @@ export default function App() {
           source: 'aircraft-source',
           layout: {
             'icon-image': ['case',
-              ['==', ['get', 'military'],   1], 'aircraft-military',
-              ['==', ['get', 'hasCallsign'],0], 'aircraft-private',
+              ['==', ['get', 'military'], 1], 'aircraft-military',
               'aircraft-civilian',
             ],
             'icon-size': 1,
             'icon-rotate': ['get', 'heading'],
             'icon-rotation-alignment': 'map',
             'icon-allow-overlap': true,
-            'text-field': ['case',
-              ['==', ['get', 'korean'], 1], ['concat', '🇰🇷 ', ['get', 'callsign']],
-              ['get', 'callsign'],
-            ],
-            'text-offset': [0, 1.6],
-            'text-size': 10,
-            'text-anchor': 'top',
-            'text-optional': true,
-            'text-allow-overlap': false,
           },
-          paint: {
-            'text-color': ['case',
-              ['==', ['get', 'military'],   1], '#ef4444',
-              ['==', ['get', 'hasCallsign'],0], '#c4b5fd',
-              '#4ade80',
-            ],
-            'text-halo-color': 'rgba(0,0,0,0.85)',
-            'text-halo-width': 1,
+          paint: {},
+        })
+
+        map.addLayer({
+          id: 'label-layer',
+          type: 'symbol',
+          source: 'aircraft-source',
+          layout: {
+            'icon-image': ['get', 'labelKey'],
+            'icon-anchor': 'top',
+            'icon-offset': [0, 18],
+            'icon-allow-overlap': false,
+            'icon-optional': true,
           },
         })
 
@@ -713,9 +769,9 @@ export default function App() {
       const map = mapInstanceRef.current
       if (!map?.isStyleLoaded()) return
       const filtered = getFilteredAircraft(data, aircraftFilterRef.current)
+      ensureAircraftLabels(filtered, map)
       map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
       setCounts(prev => ({ ...prev, aircraft: filtered.length }))
-      setKoreaBoundList(filtered.filter(isKoreaBound))
     })
 
     socket.on('fires:update', (data) => {
@@ -745,6 +801,47 @@ export default function App() {
       updateSources()
     }
   }, [activeRegion, mapLoaded, updateSources])
+
+  // ── Mock CSV download ─────────────────────────────────────────────────────
+  function downloadMockCSV(aircraft) {
+    const headers = [
+      'icao24','callsign','origin_country','time_position','last_contact',
+      'longitude','latitude','baro_altitude','on_ground','velocity',
+      'true_track','vertical_rate','squawk','position_source',
+      'military','actype','route',
+    ]
+    const rows = [headers.join(',')]
+    for (const ac of aircraft) {
+      rows.push([
+        ac.id,
+        ac.callsign,
+        ac.origin_country || ac.originCountry || '',
+        ac.time_position || '',
+        ac.last_contact || '',
+        (ac.lon ?? ac.coords?.[0] ?? '').toString(),
+        (ac.lat ?? ac.coords?.[1] ?? '').toString(),
+        ac.baro_altitude ?? '',
+        ac.on_ground ? 1 : 0,
+        ac.velocity ?? '',
+        ac.true_track ?? ac.heading ?? '',
+        ac.vertical_rate ?? '',
+        ac.squawk ?? '',
+        ac.position_source ?? '',
+        ac.military ? 1 : 0,
+        ac.actype || '',
+        ac.route || '',
+      ].join(','))
+    }
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `mock_aircraft_${new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
 
   // ── Mock controls ─────────────────────────────────────────────────────────
 
@@ -779,6 +876,7 @@ export default function App() {
     clearInterval(mockIntervalRef.current)
     mockStateRef.current = 'stopped'
     setMockState('stopped')
+    downloadMockCSV(aircraftDataRef.current)
   }
 
   function mockClear() {
@@ -798,7 +896,7 @@ export default function App() {
     const map = mapInstanceRef.current
     if (!map || !mapLoaded) return
     const layerMap = {
-      aircraft: ['aircraft-layer'],
+      aircraft: ['aircraft-layer', 'label-layer'],
       fires: ['fire-heat-layer', 'fire-circle-layer'],
       airports: ['airport-circle-layer', 'airport-label-layer'],
     }
@@ -1031,25 +1129,6 @@ export default function App() {
               </button>
             ))}
           </div>
-
-          {/* Korea-bound flights */}
-          {koreaBoundList.length > 0 && (
-            <div className="mt-2 border-t border-amber-400/20 pt-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="w-0.5 h-3 bg-amber-400/50 shrink-0" />
-                <span className="text-amber-400/60 text-xs tracking-widest">KOREA BOUND</span>
-                <span className="ml-auto text-amber-400/40 text-xs">{koreaBoundList.length}</span>
-              </div>
-              <div className="space-y-1 max-h-40 overflow-y-auto">
-                {koreaBoundList.map(ac => (
-                  <div key={ac.id || ac.callsign} className="px-2 py-1 bg-amber-400/5 border border-amber-400/20 text-xs">
-                    <div className="text-amber-300 font-bold tracking-wide">{ac.callsign}</div>
-                    {ac.route && <div className="text-amber-400/50 text-[10px]">{ac.route}</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* Intel summary */}
           <div className="mt-2 border-t border-green-400/20 pt-3 space-y-1">
