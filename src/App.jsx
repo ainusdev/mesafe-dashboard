@@ -933,12 +933,27 @@ export default function App() {
 
   // ── 3. Socket.io ──────────────────────────────────────────────────────────
   useEffect(() => {
+    // Show mock data immediately in live mode so map isn't empty while connecting
+    if (dataModeRef.current === 'live') {
+      const center = REGIONS[activeRegionRef.current].center
+      const initAircraft = generateAircraft(center)
+      const initFires    = generateFires(center)
+      animCurrentRef.current = {}
+      initAircraft.forEach(ac => {
+        animCurrentRef.current[ac.id] = { lat: ac.lat, lon: ac.lon, heading: ac.heading, headingRate: 0, currentSpeed: 0 }
+      })
+      animToRef.current = initAircraft
+      aircraftDataRef.current = initAircraft
+      fireDataRef.current = initFires
+    }
+
     const socket = io(BACKEND_URL, {
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: Infinity,
-      reconnectionDelay: 3000,
-      timeout: 5000,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 4000,
+      timeout: 2000,
     })
     socketRef.current = socket
 
