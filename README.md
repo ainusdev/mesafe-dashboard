@@ -14,7 +14,7 @@ Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS), and simulation mode.
 | Frontend | Vite + React 19, Mapbox GL JS v3, Tailwind CSS v3 |
 | Backend | Node.js + Express + Socket.io |
 | Database | Firebase Firestore |
-| Hosting | Firebase Hosting (frontend), Koyeb (backend) |
+| Hosting | Firebase Hosting (frontend), Render.com (backend) |
 
 ---
 
@@ -36,7 +36,7 @@ cd server && npm install
 ```env
 VITE_MAPBOX_TOKEN=...
 VITE_BACKEND_DEV_URL=http://localhost:3001
-VITE_BACKEND_RELEASE_URL=https://your-koyeb-app.koyeb.app
+VITE_BACKEND_RELEASE_URL=https://your-render-app.onrender.com
 ```
 
 **`server/.env`**
@@ -48,7 +48,7 @@ FIREBASE_SERVICE_ACCOUNT=./serviceAccount.json
 PORT=3001
 ```
 
-`server/serviceAccount.json` — Firebase 서비스 계정 키 (Firebase Console → 프로젝트 설정 → 서비스 계정)
+`server/serviceAccount.json` — Firebase service account key (Firebase Console → Project Settings → Service Accounts)
 
 ### Run
 
@@ -73,24 +73,41 @@ http://localhost:3001/api/health
 
 | Source | Interval | Notes |
 |--------|----------|-------|
-| OpenSky Network (ADS-B) | 22s | 4,000 req/day limit |
-| NASA FIRMS VIIRS 375m | 10s | 5,000 req/10min limit |
+| OpenSky Network (ADS-B) | 15s | OAuth — may time out from cloud IPs |
+| NASA FIRMS VIIRS 375m | 5min | 5,000 req/10min limit |
 
 ---
 
 ## Features
 
 ### Live Mode (default)
-- Real-time aircraft positions via ADS-B
-- Fire hotspots from NASA satellite data, saved to Firestore
-- Connection status indicator (LIVE / CONNECTING)
+- Real-time aircraft positions via ADS-B (OpenSky Network)
+- Fire hotspots from NASA FIRMS satellite data, saved to Firestore
+- Connection status indicator (LIVE / CONNECTING / MOCK)
+- If backend is unreachable, auto-falls back to mock data
 
 ### Mock Mode
-- **START** — generate simulation data for selected region
-- **STOP** — pause simulation, data remains on map
+- **START** — generate simulation data for selected region, download CSV on STOP
+- **STOP** — pause simulation, download mock data as CSV
 - **CLR** — clear all simulation data
 - Region change during simulation immediately reseeds data
 - Mock data is NOT saved to Firestore
+- Mock aircraft have OpenSky-compatible fields
+
+### Map Layers
+- **Aircraft** — SVG icons, rotate by heading; military (red), civilian (green)
+- **Fires** — heatmap (zoom < 9), circles (zoom >= 9)
+- **Airports** — international airports shown by default; other airports toggleable
+- Country flag emoji rendered above each aircraft via canvas (bypasses Mapbox SDF font limit)
+- Callsign text below each aircraft icon
+
+### Aircraft Popup
+- ICAO, callsign, altitude, speed, heading
+- FlightAware schedule link for airline callsigns
+
+### Airport Popup
+- Name, ICAO/IATA, type, elevation
+- FlightAware departures link
 
 ### Fire Time Window Filter
 Filter hotspots by acquisition time: **1H / 6H / 12H / 24H**
@@ -106,7 +123,7 @@ Filter by type: **ALL / MILITARY / CIVILIAN**
 # Frontend → Firebase Hosting
 npm run build && firebase deploy --only hosting
 
-# Backend → Koyeb (auto-deploy on push)
+# Backend → Render.com (auto-deploy on push to main)
 git push origin main
 ```
 
@@ -119,6 +136,7 @@ git push origin main
 | `GET /api/health` | Server status + data counts |
 | `GET /api/aircraft` | Current aircraft data |
 | `GET /api/fires` | Current fire hotspot data |
+| `GET /api/airports/me` | Middle East airport data |
 
 ---
 

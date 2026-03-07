@@ -58,48 +58,32 @@ function isoToFlagEmoji(code) {
   ).join('')
 }
 
-/** Render [callsign  🇹🇷] as a single canvas image — bypasses Mapbox SDF font limit. */
-function makeAircraftLabelImage(callsign, isoCode, isMilitary) {
+/** Render flag emoji as a canvas image — bypasses Mapbox SDF font limit for color emoji. */
+function makeFlagImage(isoCode) {
   const canvas = document.createElement('canvas')
   const ctx = canvas.getContext('2d')
-  const fs = 11
-  const csColor = isMilitary ? '#ef4444' : '#4ade80'
-  const flagEmoji = isoCode ? isoToFlagEmoji(isoCode) : ''
-
-  ctx.font = `${fs}px "Courier New", monospace`
-  const csW = Math.ceil(ctx.measureText(callsign).width)
-  const gap = isoCode ? 3 : 0
-  const flagW = isoCode ? Math.ceil(fs * 1.4) : 0
-  const w = csW + gap + flagW + 2
+  const fs = 14
+  const flagEmoji = isoToFlagEmoji(isoCode)
+  const w = Math.ceil(fs * 1.6)
   const h = fs + 4
-
   canvas.width = w
   canvas.height = h
-
-  ctx.font = `${fs}px "Courier New", monospace`
+  ctx.font = `${fs}px sans-serif`
   ctx.textBaseline = 'middle'
-  ctx.shadowColor = 'rgba(0,0,0,0.9)'
-  ctx.shadowBlur = 2
-  ctx.fillStyle = csColor
-  ctx.fillText(callsign, 1, h / 2)
-
-  if (isoCode) {
-    ctx.shadowBlur = 0
-    ctx.font = `${flagW}px sans-serif`
-    ctx.fillText(flagEmoji, csW + gap + 1, h / 2)
-  }
-
+  ctx.textAlign = 'center'
+  ctx.fillText(flagEmoji, w / 2, h / 2)
   return { width: w, height: h, data: new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer) }
 }
 
-/** Register any missing aircraft label images into the Mapbox map instance. */
+/** Register any missing flag images into the Mapbox map instance. */
 function ensureAircraftLabels(aircraft, map) {
   if (!map?.isStyleLoaded()) return
   aircraft.forEach(ac => {
-    const cs = (ac.callsign || '').trim()
     const code = COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || ''
-    const id = `lbl-${cs}-${code}-${ac.military ? 1 : 0}`
-    if (!map.hasImage(id)) map.addImage(id, makeAircraftLabelImage(cs, code, !!ac.military))
+    if (code) {
+      const id = `flag-${code}`
+      if (!map.hasImage(id)) map.addImage(id, makeFlagImage(code))
+    }
   })
 }
 
@@ -256,7 +240,6 @@ const COUNTRY_CODE = {
   'Slovenia':'SI',
   'Somalia':'SO',
   'South Africa':'ZA',
-  'South Korea':'KR',
   'Spain':'ES',
   'Sri Lanka':'LK',
   'Sudan':'SD',
@@ -467,7 +450,7 @@ function toGeoJSONAircraft(data) {
         registration: ac.registration || '',
         originCountry: ac.originCountry || ac.origin_country || '',
         countryCode: COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || '',
-        labelKey: `lbl-${(ac.callsign || '').trim()}-${COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || ''}-${ac.military ? 1 : 0}`,
+        flagKey: COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] ? `flag-${COUNTRY_CODE[ac.originCountry || ac.origin_country || '']}` : '',
       },
     })),
   }
@@ -710,20 +693,32 @@ export default function App() {
             'icon-rotate': ['get', 'heading'],
             'icon-rotation-alignment': 'map',
             'icon-allow-overlap': true,
+            'text-field': ['get', 'callsign'],
+            'text-font': ['literal', ['DIN Offc Pro Regular', 'Arial Unicode MS Regular']],
+            'text-size': 10,
+            'text-anchor': 'top',
+            'text-offset': [0, 1.3],
+            'text-allow-overlap': false,
+            'text-optional': true,
           },
-          paint: {},
+          paint: {
+            'text-color': ['case', ['==', ['get', 'military'], 1], '#ef4444', '#4ade80'],
+            'text-halo-color': 'rgba(0,0,0,0.85)',
+            'text-halo-width': 1,
+          },
         })
 
         map.addLayer({
-          id: 'label-layer',
+          id: 'flag-layer',
           type: 'symbol',
           source: 'aircraft-source',
+          filter: ['!=', ['get', 'flagKey'], ''],
           layout: {
-            'icon-image': ['get', 'labelKey'],
-            'icon-anchor': 'top',
-            'icon-offset': [0, 18],
-            'icon-allow-overlap': false,
-            'icon-optional': true,
+            'icon-image': ['get', 'flagKey'],
+            'icon-anchor': 'bottom',
+            'icon-offset': [0, -20],
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
           },
         })
 
@@ -1049,7 +1044,7 @@ export default function App() {
     const map = mapInstanceRef.current
     if (!map || !mapLoaded) return
     const layerMap = {
-      aircraft: ['aircraft-layer', 'label-layer'],
+      aircraft: ['aircraft-layer', 'flag-layer'],
       fires: ['fire-heat-layer', 'fire-circle-layer'],
       airports: ['airport-circle-layer', 'airport-label-layer'],
       airportsOther: ['airport-other-circle-layer', 'airport-other-label-layer'],
