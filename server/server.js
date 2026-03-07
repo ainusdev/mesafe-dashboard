@@ -552,7 +552,7 @@ server.listen(PORT, async () => {
   await Promise.all([fetchAircraft(), fetchFIRMS()])
 
   // Scheduled intervals
-  setInterval(fetchAircraft, 60_000)   // Every 60s
+  setInterval(fetchAircraft, 22_000)   // Every 22s (4000 req/day limit)
   setInterval(fetchFIRMS, 10_000)      // Every 10s (FIRMS limit: 5000/10min)
 
 })

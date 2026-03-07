@@ -6,7 +6,9 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 // ─── Module-level constants ────────────────────────────────────────────────
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
+const BACKEND_URL = import.meta.env.DEV
+  ? import.meta.env.VITE_BACKEND_DEV_URL
+  : import.meta.env.VITE_BACKEND_RELEASE_URL
 
 const REGIONS = {
   IRAN:         { name: 'IRAN',         center: [53.6880, 32.4279], zoom: 5 },
