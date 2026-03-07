@@ -987,16 +987,23 @@ server.listen(PORT, async () => {
 
   initFirestore()
 
-  // Register intervals immediately — do not block on startup fetch
   const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 100_000
   const firesInterval    = parseInt(process.env.FIRMS_INTERVAL_MS)    || 300_000
-  setInterval(fetchAircraft, aircraftInterval)
-  setInterval(fetchFIRMS,    firesInterval)
-  log('Socket', `Intervals — aircraft: ${aircraftInterval}ms  fires: ${firesInterval}ms`)
+  const jitterMult       = parseFloat(process.env.INTERVAL_JITTER_MULTIPLIER) || 3
+
+  // Schedule with jitter: next delay = base + random(0, base × multiplier)
+  function scheduleWithJitter(fn, baseMs, tag) {
+    const jitter = Math.random() * baseMs * jitterMult
+    const next   = Math.round(baseMs + jitter)
+    log(tag, `Next fetch in ${(next / 1000).toFixed(0)}s`)
+    setTimeout(async () => { await fn().catch(err => log(tag, `Fetch error: ${err.message}`, 'error')); scheduleWithJitter(fn, baseMs, tag) }, next)
+  }
+
+  log('Socket', `Base intervals — aircraft: ${aircraftInterval}ms  fires: ${firesInterval}ms  jitter: ×${jitterMult}`)
 
   // Initial fetch runs in background — server is ready to serve from cache immediately
   fetchAirports().catch(err => log('Airports', `Startup fetch failed: ${err.message}`, 'error'))
-  fetchAircraft().catch(err => log('OpenSky',  `Startup fetch failed: ${err.message}`, 'error'))
-  fetchFIRMS().catch(err    => log('FIRMS',    `Startup fetch failed: ${err.message}`, 'error'))
+  fetchAircraft().catch(err => { log('OpenSky', `Startup fetch failed: ${err.message}`, 'error') }).finally(() => scheduleWithJitter(fetchAircraft, aircraftInterval, 'OpenSky'))
+  fetchFIRMS().catch(err    => { log('FIRMS',   `Startup fetch failed: ${err.message}`, 'error') }).finally(() => scheduleWithJitter(fetchFIRMS,    firesInterval,    'FIRMS'))
 
 })
