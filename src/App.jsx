@@ -306,12 +306,11 @@ function buildMockFleet() {
   return Array.from({ length: 30 }, (_, i) => {
     const isMilitary = i < 6  // first 6 are military, rest civilian
 
-    let callsign, route, actype, originCountry, speedKts, altFt
+    let callsign, actype, originCountry, speedKts, altFt
 
     if (isMilitary) {
       callsign      = CALLSIGNS_MILITARY[i % CALLSIGNS_MILITARY.length]
       actype        = ['F-16','F-15','C-130','KC-135','MQ-9','UH-60'][i % 6]
-      route         = null
       originCountry = ['United States','United Kingdom','Israel','France','Germany','United States'][i % 6]
       speedKts      = randInt(300, 600)
       altFt         = randInt(1000, 35000)
@@ -319,9 +318,6 @@ function buildMockFleet() {
       const ci = i - 6
       callsign      = CALLSIGNS_CIVILIAN[ci % CALLSIGNS_CIVILIAN.length]
       actype        = ['B77W','A320','A330','B737','A321','B787','A380'][ci % 7]
-      route         = ci % 3 !== 0
-        ? ['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','MCT→BOM','DOH→ICN','DXB→ICN','RUH→ICN','AMM→ICN'][ci % 11]
-        : null
       originCountry = ['Turkey','United Arab Emirates','Saudi Arabia','Qatar','Egypt','Germany','United Kingdom','India','Pakistan','Iran','Jordan','Greece','Russia','South Korea','France'][ci % 15]
       speedKts      = randInt(400, 560)
       altFt         = randInt(28000, 43000)
@@ -346,7 +342,6 @@ function buildMockFleet() {
       headingChange:   rand(5, 25),              // magnitude of last heading change (deg)
       actype,
       military:        isMilitary,
-      route,
       registration:    '',
       originCountry,
       // position will be set by generateAircraft / tickAircraft
@@ -489,7 +484,6 @@ function toGeoJSONAircraft(data) {
         speed: ac.speed || 0,
         actype: ac.actype || 'UNKNOWN',
         military: ac.military ? 1 : 0,
-        route: ac.route || '',
         registration: ac.registration || '',
         originCountry: ac.originCountry || ac.origin_country || '',
         countryCode: COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || '',
@@ -534,7 +528,6 @@ function buildAircraftPopupHTML(props) {
       </div>
       <div style="color:#9ca3af;font-size:10px;margin-bottom:6px">${acLabel}</div>
       <div><span style="color:#6b7280">COUNTRY:</span> ${props.originCountry || '—'}</div>
-      <div><span style="color:#6b7280">ROUTE:</span> <span style="color:#fbbf24">${props.route || '—'}</span></div>
       ${props.registration ? `<div><span style="color:#6b7280">REG:</span> ${props.registration}</div>` : ''}
       <div><span style="color:#6b7280">TYPE:</span> ${props.actype || '—'}</div>
       <div><span style="color:#6b7280">ALT:</span> ${altFt} ft</div>
@@ -1028,7 +1021,7 @@ export default function App() {
       'icao24','callsign','origin_country','time_position','last_contact',
       'longitude','latitude','baro_altitude','on_ground','velocity',
       'true_track','vertical_rate','squawk','position_source',
-      'military','actype','route',
+      'military','actype',
     ]
     const rows = [headers.join(',')]
     for (const ac of aircraft) {
@@ -1049,7 +1042,6 @@ export default function App() {
         ac.position_source ?? '',
         ac.military ? 1 : 0,
         ac.actype || '',
-        ac.route || '',
       ].join(','))
     }
     const blob = new Blob([rows.join('\n')], { type: 'text/csv' })

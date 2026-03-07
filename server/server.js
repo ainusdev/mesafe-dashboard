@@ -26,7 +26,7 @@ const C = {
 const TAG_COLOR = {
   Auth:      C.yellow,
   OpenSky:   C.cyan,
-  Routes:    C.blue,
+  Routes:    C.blue, // kept for log tag compatibility
   FIRMS:     C.green,
   Firestore: C.magenta,
   Airports:  C.lime,
@@ -307,9 +307,6 @@ function parseADSBLol(ac) {
     onGround:       !!onGround,
     actype:         ac.t || 'UNKNOWN',
     registration:   ac.r || '',
-    origin:         null,
-    destination:    null,
-    route:          null,
     originCountry:  regToCountry(ac.r) || ac.ownOp || '',
     squawk:         ac.squawk || '',
     positionSource: 'ADS-B',
@@ -451,124 +448,12 @@ function parseStateVector(sv) {
     onGround:     !!sv[8],
     actype:       'UNKNOWN',    // OpenSky free tier does not provide aircraft type
     registration: '',
-    origin:       null,
-    destination:  null,
-    route:        null,
     originCountry: sv[2] || '',
     squawk:       sv[14] || '',
     positionSource: ['ADS-B', 'ASTERIX', 'MLAT', 'FLARM'][sv[16]] || 'UNKNOWN',
   }
 }
 
-// ─── Route Cache (/flights/aircraft) ─────────────────────────────────────────
-// OpenSky /flights/aircraft returns departure/arrival airports (ICAO codes)
-// for a specific aircraft over a given time window.
-//
-// Strategy: cache per icao24 with 2-hour TTL, enrich in background batches
-// after each position fetch so the initial emit is never delayed.
-//
-// NOTE: /flights/aircraft requires authenticated requests (OPENSKY_USERNAME set).
-
-const routeCache = new Map()   // icao24 → { origin, destination, route, cachedAt }
-const ROUTE_TTL   = 2 * 60 * 60 * 1000   // 2 h — route won't change mid-flight
-const ROUTE_BATCH = 3                     // parallel requests per batch
-const ROUTE_BATCH_DELAY_MS = 800          // pause between batches (rate-limit headroom)
-
-
-function getCachedRoute(icao24) {
-  const entry = routeCache.get(icao24)
-  if (!entry) return null
-  if (Date.now() - entry.cachedAt > ROUTE_TTL) { routeCache.delete(icao24); return null }
-  return entry
-}
-
-/**
- * Call GET /flights/aircraft for one icao24 and return { origin, destination, route }.
- * Returns null on error or when no flight history is found.
- * Results (including negative) are stored in routeCache to skip repeated lookups.
- */
-async function fetchFlightRoute(icao24) {
-  const cached = getCachedRoute(icao24)
-  if (cached) return cached
-
-  // /flights/aircraft requires authentication
-  if (!process.env.OPENSKY_CLIENT_ID) return null
-
-  const now   = Math.floor(Date.now() / 1000)
-  const begin = now - 86400   // look back 24 h
-
-  try {
-    const headers = await getAuthHeaders()
-    const res = await axios.get('https://opensky-network.org/api/flights/aircraft', {
-      params: { icao24, begin, end: now },
-      headers,
-      timeout: 12000,
-    })
-
-    const flights = Array.isArray(res.data) ? res.data : []
-
-    if (flights.length === 0) {
-      routeCache.set(icao24, { origin: null, destination: null, route: null, cachedAt: Date.now() })
-      return null
-    }
-
-    // Pick the flight with the latest firstSeen (= current or most recent leg)
-    const latest = flights.reduce((a, b) => (a.firstSeen > b.firstSeen ? a : b))
-    const origin      = latest.estDepartureAirport || null   // ICAO 4-letter, e.g. "OMDB"
-    const destination = latest.estArrivalAirport   || null
-    const route       = (origin && destination) ? `${origin} → ${destination}` : null
-
-    const entry = { origin, destination, route, cachedAt: Date.now() }
-    routeCache.set(icao24, entry)
-    return entry
-  } catch (err) {
-    if (err.response?.status === 404) {
-      // No flight record — cache negative to avoid re-querying
-      routeCache.set(icao24, { origin: null, destination: null, route: null, cachedAt: Date.now() })
-    }
-    // 429 = rate limited, 401 = bad auth — silently skip, retry next cycle
-    return null
-  }
-}
-
-/**
- * Enrich aircraftData with route info in the background (non-blocking).
- * Only queries aircraft whose icao24 is not yet in routeCache.
- * Emits updated aircraft:update to all clients as each batch completes.
- */
-async function enrichRoutesInBackground(snapshot) {
-  if (!process.env.OPENSKY_CLIENT_ID) return   // skip if no OAuth credentials
-
-  const uncached = snapshot.filter(ac => !getCachedRoute(ac.id))
-  if (uncached.length === 0) return
-
-  log('Routes', `Fetching routes for ${uncached.length} new aircraft…`)
-  let enriched = 0
-
-  for (let i = 0; i < uncached.length; i += ROUTE_BATCH) {
-    const batch = uncached.slice(i, i + ROUTE_BATCH)
-
-    await Promise.all(batch.map(async ac => {
-      const info = await fetchFlightRoute(ac.id)
-      if (!info?.route) return
-
-      // Patch the live aircraftData array in-place
-      const idx = aircraftData.findIndex(a => a.id === ac.id)
-      if (idx !== -1) { aircraftData[idx] = { ...aircraftData[idx], ...info }; enriched++ }
-    }))
-
-    // Push incremental update to clients after every batch
-    io.emit('aircraft:update', aircraftData)
-
-    if (i + ROUTE_BATCH < uncached.length) {
-      await new Promise(r => setTimeout(r, ROUTE_BATCH_DELAY_MS))
-    }
-  }
-
-  if (enriched > 0) {
-    log('Routes', `${enriched} routes resolved  (cache size: ${routeCache.size})`)
-  }
-}
 
 // ─── OpenSky CSV export ───────────────────────────────────────────────────────
 
@@ -720,21 +605,10 @@ async function fetchAircraft() {
       : res.data.states.map(parseStateVector).filter(Boolean).filter(ac => !ac.onGround)
     )
 
-    // Apply any already-cached routes before the first emit
-    aircraftData = parsed.map(ac => {
-      const cached = getCachedRoute(ac.id)
-      return cached ? { ...ac, ...cached } : ac
-    })
-
+    aircraftData = parsed
     const milCount = aircraftData.filter(a => a.military).length
-    const withRoute = aircraftData.filter(a => a.route).length
     io.emit('aircraft:update', aircraftData)
-    log('OpenSky', `${aircraftData.length} aircraft  (${milCount} mil  ${withRoute} with route)`)
-
-    // Fetch missing routes in background — won't block next interval
-    enrichRoutesInBackground(aircraftData).catch(err =>
-      log('Routes', `Background enrichment error: ${err.message}`, 'error')
-    )
+    log('OpenSky', `${aircraftData.length} aircraft  (${milCount} mil)`)
   } catch (err) {
     if (err.response?.status === 429) {
       log('OpenSky', 'Rate limited (429) — will retry next interval', 'warn')
@@ -744,14 +618,10 @@ async function fetchAircraft() {
     // ── adsb.lol fallback ──────────────────────────────────────────────────────
     try {
       const parsed = await fetchADSBLol()
-      aircraftData = parsed.map(ac => {
-        const cached = getCachedRoute(ac.id)
-        return cached ? { ...ac, ...cached } : ac
-      })
+      aircraftData = parsed
       const milCount = aircraftData.filter(a => a.military).length
       io.emit('aircraft:update', aircraftData)
       log('OpenSky', `[adsb.lol] ${aircraftData.length} aircraft  (${milCount} mil)`)
-      enrichRoutesInBackground(aircraftData).catch(() => {})
       return
     } catch (lolErr) {
       log('OpenSky', `adsb.lol also failed: ${lolErr.message}`, 'error')
