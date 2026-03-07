@@ -888,24 +888,7 @@ export default function App() {
 
         setMapLoaded(true)
 
-        // Fetch airports (static, once)
-        fetch(`${BACKEND_URL}/api/airports/me`)
-          .then(r => r.json())
-          .then(data => {
-            const geojson = {
-              type: 'FeatureCollection',
-              features: data.map(a => ({
-                type: 'Feature',
-                geometry: { type: 'Point', coordinates: a.coords },
-                properties: {
-                  id: a.id, name: a.name, iata: a.iata, icao: a.icao,
-                  type: a.type, municipality: a.municipality, elevation: a.elevation,
-                },
-              })),
-            }
-            map.getSource('airport-source')?.setData(geojson)
-          })
-          .catch(() => {})
+        // Airports loaded via WebSocket airports:update on connect
       })
     })
 
@@ -944,6 +927,7 @@ export default function App() {
     socket.on('connect', () => {
       backendConnectedRef.current = true
       setBackendConnected(true)
+      socket.emit('data:init')
     })
 
     socket.on('disconnect', () => {
@@ -991,6 +975,24 @@ export default function App() {
       const filtered = getFilteredFires(data, fireHoursFilterRef.current)
       map.getSource('fire-source')?.setData(toGeoJSONFires(filtered))
       setCounts(prev => ({ ...prev, fires: filtered.length }))
+    })
+
+    socket.on('airports:update', (data) => {
+      if (!data?.length) return
+      const map = mapInstanceRef.current
+      if (!map?.isStyleLoaded()) return
+      const geojson = {
+        type: 'FeatureCollection',
+        features: data.map(a => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: a.coords },
+          properties: {
+            id: a.id, name: a.name, iata: a.iata, icao: a.icao,
+            type: a.type, municipality: a.municipality, elevation: a.elevation,
+          },
+        })),
+      }
+      map.getSource('airport-source')?.setData(geojson)
     })
 
     return () => {

@@ -54,12 +54,13 @@ app.use(cors())
 app.use(express.json())
 
 const PORT = process.env.PORT || 3001
+const CACHE_DIR = path.join(__dirname, 'cache')
 
 // ─── In-memory state ─────────────────────────────────────────────────────────
 
-let aircraftData = process.env.SAVE_OPENSKY_CSV === 'true' ? loadLatestOpenSkyCSV() : []
-let fireData = process.env.SAVE_FIRMS_CSV === 'true' ? loadLatestFireCSV() : []
-let airportData = []
+let aircraftData = loadAircraftCache()
+let fireData     = loadFiresCache()
+let airportData  = loadAirportsCache()
 let db = null
 
 // ─── Firestore ────────────────────────────────────────────────────────────────
@@ -165,6 +166,7 @@ async function fetchAirports() {
     }
 
     airportData = airports
+    saveAirportsCache(airportData)
     log('Airports', `${airports.length} airports loaded (Middle East)`)
   } catch (err) {
     log('Airports', `Fetch error: ${err.message}`, 'error')
@@ -564,6 +566,144 @@ function loadLatestFireCSV() {
   }
 }
 
+// ─── Latest-data cache (server/cache/*.csv — always overwrites) ───────────────
+
+function escapeCsv(v) {
+  const s = String(v == null ? '' : v)
+  return s.includes(',') || s.includes('"') || s.includes('\n')
+    ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+function ensureCacheDir() {
+  if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true })
+}
+
+const AIRCRAFT_CACHE_HEADERS = ['id','callsign','lat','lon','altitude','speed','heading','military','onGround','actype','registration','originCountry','squawk','positionSource']
+
+function saveAircraftCache(aircraft) {
+  try {
+    ensureCacheDir()
+    const rows = [AIRCRAFT_CACHE_HEADERS.join(',')]
+    for (const ac of aircraft) {
+      rows.push([
+        escapeCsv(ac.id), escapeCsv(ac.callsign),
+        ac.lat, ac.lon, ac.altitude, ac.speed,
+        ac.heading ?? '', ac.military, ac.onGround,
+        escapeCsv(ac.actype), escapeCsv(ac.registration),
+        escapeCsv(ac.originCountry), escapeCsv(ac.squawk), escapeCsv(ac.positionSource),
+      ].join(','))
+    }
+    fs.writeFileSync(path.join(CACHE_DIR, 'aircraft.csv'), rows.join('\n'), 'utf8')
+    log('OpenSky', `Cache saved — ${aircraft.length} aircraft`)
+  } catch (err) {
+    log('OpenSky', `Cache save error: ${err.message}`, 'error')
+  }
+}
+
+function loadAircraftCache() {
+  try {
+    const file = path.join(CACHE_DIR, 'aircraft.csv')
+    if (!fs.existsSync(file)) return []
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
+    if (lines.length < 2) return []
+    return lines.slice(1).map(line => {
+      const v = parseCSVLine(line)
+      if (v.length < 14) return null
+      const heading = v[6] !== '' ? parseFloat(v[6]) : null
+      return {
+        id: v[0], callsign: v[1],
+        lat: parseFloat(v[2]), lon: parseFloat(v[3]),
+        altitude: parseInt(v[4]) || 0, speed: parseInt(v[5]) || 0,
+        heading: isNaN(heading) ? null : heading,
+        military: v[7] === 'true', onGround: v[8] === 'true',
+        actype: v[9], registration: v[10], originCountry: v[11],
+        squawk: v[12], positionSource: v[13],
+      }
+    }).filter(r => r && !isNaN(r.lat) && !isNaN(r.lon))
+  } catch (err) {
+    log('OpenSky', `Cache load error: ${err.message}`, 'error')
+    return []
+  }
+}
+
+function saveFiresCache(fires) {
+  try {
+    ensureCacheDir()
+    const rows = [FIRMS_CSV_HEADERS.join(',')]
+    for (const f of fires) {
+      rows.push([f.id, f.coords[0], f.coords[1], f.brightness, f.frp, f.confidence, f.acqDate, f.acqTime, f.acqTimestamp, f.intensity].join(','))
+    }
+    fs.writeFileSync(path.join(CACHE_DIR, 'fires.csv'), rows.join('\n'), 'utf8')
+    log('FIRMS', `Cache saved — ${fires.length} hotspots`)
+  } catch (err) {
+    log('FIRMS', `Cache save error: ${err.message}`, 'error')
+  }
+}
+
+function loadFiresCache() {
+  try {
+    const file = path.join(CACHE_DIR, 'fires.csv')
+    if (!fs.existsSync(file)) return []
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
+    if (lines.length < 2) return []
+    return lines.slice(1).map(line => {
+      const v = line.split(',')
+      if (v.length < 10) return null
+      return {
+        id: v[0], coords: [parseFloat(v[1]), parseFloat(v[2])],
+        brightness: parseFloat(v[3]), frp: parseFloat(v[4]),
+        confidence: v[5], acqDate: v[6], acqTime: v[7],
+        acqTimestamp: parseInt(v[8], 10), intensity: v[9],
+      }
+    }).filter(Boolean)
+  } catch (err) {
+    log('FIRMS', `Cache load error: ${err.message}`, 'error')
+    return []
+  }
+}
+
+const AIRPORT_CACHE_HEADERS = ['id','name','iata','icao','type','country','municipality','lon','lat','elevation']
+
+function saveAirportsCache(airports) {
+  try {
+    ensureCacheDir()
+    const rows = [AIRPORT_CACHE_HEADERS.join(',')]
+    for (const a of airports) {
+      rows.push([
+        escapeCsv(a.id), escapeCsv(a.name), escapeCsv(a.iata), escapeCsv(a.icao),
+        a.type, a.country, escapeCsv(a.municipality),
+        a.coords[0], a.coords[1], a.elevation,
+      ].join(','))
+    }
+    fs.writeFileSync(path.join(CACHE_DIR, 'airports.csv'), rows.join('\n'), 'utf8')
+    log('Airports', `Cache saved — ${airports.length} airports`)
+  } catch (err) {
+    log('Airports', `Cache save error: ${err.message}`, 'error')
+  }
+}
+
+function loadAirportsCache() {
+  try {
+    const file = path.join(CACHE_DIR, 'airports.csv')
+    if (!fs.existsSync(file)) return []
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
+    if (lines.length < 2) return []
+    return lines.slice(1).map(line => {
+      const v = parseCSVLine(line)
+      if (v.length < 10) return null
+      return {
+        id: v[0], name: v[1], iata: v[2], icao: v[3],
+        type: v[4], country: v[5], municipality: v[6],
+        coords: [parseFloat(v[7]), parseFloat(v[8])],
+        elevation: parseInt(v[9]) || 0,
+      }
+    }).filter(Boolean)
+  } catch (err) {
+    log('Airports', `Cache load error: ${err.message}`, 'error')
+    return []
+  }
+}
+
 async function fetchAircraft() {
   try {
     const headers = await getAuthHeaders()
@@ -606,6 +746,7 @@ async function fetchAircraft() {
     )
 
     aircraftData = parsed
+    saveAircraftCache(aircraftData)
     const milCount = aircraftData.filter(a => a.military).length
     io.emit('aircraft:update', aircraftData)
     log('OpenSky', `${aircraftData.length} aircraft  (${milCount} mil)`)
@@ -619,6 +760,7 @@ async function fetchAircraft() {
     try {
       const parsed = await fetchADSBLol()
       aircraftData = parsed
+      saveAircraftCache(aircraftData)
       const milCount = aircraftData.filter(a => a.military).length
       io.emit('aircraft:update', aircraftData)
       log('OpenSky', `[adsb.lol] ${aircraftData.length} aircraft  (${milCount} mil)`)
@@ -693,6 +835,7 @@ async function fetchFIRMS() {
     )
 
     fireData = process.env.SAVE_FIRMS_CSV === 'true' ? loadLatestFireCSV() : fires
+    saveFiresCache(fireData)
     io.emit('fires:update', fireData)
     log('FIRMS', `${fireData.length} fire hotspots`)
   } catch (err) {
@@ -744,9 +887,12 @@ app.get('/api/flights', async (req, res) => {
 io.on('connection', (socket) => {
   log('Socket', `Client connected: ${socket.id}`)
 
-  // Push current state to newly connected client
-  socket.emit('aircraft:update', aircraftData)
-  socket.emit('fires:update', fireData)
+  socket.on('data:init', () => {
+    socket.emit('aircraft:update', aircraftData)
+    socket.emit('fires:update', fireData)
+    socket.emit('airports:update', airportData)
+    log('Socket', `data:init → ${aircraftData.length} aircraft, ${fireData.length} fires, ${airportData.length} airports → ${socket.id}`)
+  })
 
   socket.on('disconnect', () => {
     log('Socket', `Client disconnected: ${socket.id}`)
