@@ -946,33 +946,39 @@ app.get('/api/flights', async (req, res) => {
 io.on('connection', (socket) => {
   log('Socket', `Client connected: ${socket.id}`)
 
-  socket.on('data:init', async () => {
-    // ── Airports: serve from cache; fetch if none ────────────────────────────
-    if (airportData.length === 0) {
-      log('Airports', 'No cache — fetching…')
-      await fetchAirports()
-    }
-    socket.emit('airports:update', airportData)
+  socket.on('data:init', () => {
+    // Each type is handled independently — no blocking between them
 
-    // ── Aircraft: read from latest CSV; fetch if none ─────────────────────────
-    let ac = loadAircraftCache()
-    if (ac.length === 0) {
-      log('OpenSky', 'No aircraft cache — fetching for data:init…')
-      await fetchAircraft()
-      ac = loadAircraftCache()
-    }
-    socket.emit('aircraft:update', ac)
+    ;(async () => {
+      if (airportData.length === 0) {
+        log('Airports', 'No cache — fetching…')
+        await fetchAirports()
+      }
+      socket.emit('airports:update', airportData)
+      log('Socket', `airports:update → ${airportData.length} ap → ${socket.id}`)
+    })()
 
-    // ── Fires: read from latest CSV; fetch if none ────────────────────────────
-    let fires = loadFiresCache()
-    if (fires.length === 0) {
-      log('FIRMS', 'No fires cache — fetching for data:init…')
-      await fetchFIRMS()
-      fires = loadFiresCache()
-    }
-    socket.emit('fires:update', fires)
+    ;(async () => {
+      let ac = loadAircraftCache()
+      if (ac.length === 0) {
+        log('OpenSky', 'No aircraft cache — fetching for data:init…')
+        await fetchAircraft()
+        ac = loadAircraftCache()
+      }
+      socket.emit('aircraft:update', ac)
+      log('Socket', `aircraft:update → ${ac.length} ac → ${socket.id}`)
+    })()
 
-    log('Socket', `data:init → ${ac.length} ac, ${fires.length} fires, ${airportData.length} ap → ${socket.id}`)
+    ;(async () => {
+      let fires = loadFiresCache()
+      if (fires.length === 0) {
+        log('FIRMS', 'No fires cache — fetching for data:init…')
+        await fetchFIRMS()
+        fires = loadFiresCache()
+      }
+      socket.emit('fires:update', fires)
+      log('Socket', `fires:update → ${fires.length} fires → ${socket.id}`)
+    })()
   })
 
   socket.on('disconnect', () => {
