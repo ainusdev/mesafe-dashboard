@@ -270,6 +270,14 @@ function buildAircraftPopupHTML(props) {
       <div><span style="color:#6b7280">ALT:</span> ${altFt} ft</div>
       <div><span style="color:#6b7280">SPD:</span> ${spd}</div>
       <div><span style="color:#6b7280">HDG:</span> ${Math.round(props.heading || 0)}°</div>
+      ${props.callsign ? `
+      <div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
+        <a href="https://www.trip.com/flights/status-${props.callsign.trim().toLowerCase()}/"
+          target="_blank" rel="noopener noreferrer"
+          style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
+          ↗ 스케줄 보기 (trip.com)
+        </a>
+      </div>` : ''}
       <div style="margin-top:5px;color:rgba(74,222,128,0.4);font-size:10px">ADS-B // SIMULATED DATA</div>
     </div>`
 }
@@ -327,6 +335,15 @@ function buildAirportPopupHTML(props) {
       <div><span style="color:#6b7280">CITY:</span> ${props.municipality || '—'}</div>
       <div><span style="color:#6b7280">TYPE:</span> <span style="color:${typeColor}">${typeLabel}</span></div>
       <div><span style="color:#6b7280">ELEV:</span> ${props.elevation ? props.elevation + ' ft' : '—'}</div>
+      <div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
+        <a href="${props.iata
+          ? `https://www.trip.com/flights/status/${props.iata.toLowerCase()}/`
+          : `https://www.flightaware.com/live/airport/${props.icao}`
+        }" target="_blank" rel="noopener noreferrer"
+          style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
+          ↗ 취항노선 보기 (trip.com)
+        </a>
+      </div>
     </div>`
 }
 
