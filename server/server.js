@@ -44,6 +44,7 @@ function log(tag, msg, level = 'info') {
 // ─── Express + Socket.io setup ───────────────────────────────────────────────
 
 const app = express()
+app.set('json spaces', 2)
 const server = http.createServer(app)
 
 const io = new Server(server, {
