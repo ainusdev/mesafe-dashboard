@@ -302,7 +302,7 @@ function parseADSBLol(ac) {
     lon,
     altitude:       altFt != null ? Math.round(altFt) : 0,
     speed:          typeof ac.gs === 'number' ? Math.round(ac.gs) : 0,
-    heading:        ac.track || 0,
+    heading:        ac.track != null ? ac.track : null,
     military:       isMilitaryAircraft(icao24, callsign),
     onGround:       !!onGround,
     actype:         ac.t || 'UNKNOWN',
@@ -446,7 +446,7 @@ function parseStateVector(sv) {
     lon:          lon,
     altitude:     baroM != null ? Math.round(baroM * METRES_TO_FEET) : 0,  // feet
     speed:        velMs != null ? Math.round(velMs * M_S_TO_KNOTS) : 0,     // knots
-    heading:      sv[10] || 0,
+    heading:      sv[10] != null ? sv[10] : null,
     military:     isMilitaryAircraft(icao24, callsign),
     onGround:     !!sv[8],
     actype:       'UNKNOWN',    // OpenSky free tier does not provide aircraft type
@@ -898,7 +898,7 @@ server.listen(PORT, async () => {
   await Promise.all([fetchAircraft(), fetchFIRMS(), fetchAirports()])
 
   // Scheduled intervals (configurable via .env, defaults: aircraft 22s, fires 300s)
-  const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 22_000
+  const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 100_000
   const firesInterval    = parseInt(process.env.FIRMS_INTERVAL_MS)    || 300_000
   setInterval(fetchAircraft, aircraftInterval)
   setInterval(fetchFIRMS,    firesInterval)

@@ -299,59 +299,73 @@ function randHex(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('')
 }
 
-function generateAircraft(center) {
-  const count = randInt(20, 30)
-  return Array.from({ length: count }, () => {
-    const isMilitary = Math.random() < 0.20
+// Fixed mock fleet — identities never change, only positions update
+let mockFleet = null
+
+function buildMockFleet() {
+  return Array.from({ length: 30 }, (_, i) => {
+    const isMilitary = i < 6  // first 6 are military, rest civilian
 
     let callsign, route, actype, originCountry, speedKts, altFt
 
     if (isMilitary) {
-      callsign      = randItem(CALLSIGNS_MILITARY)
-      actype        = randItem(['F-16','F-15','C-130','KC-135','MQ-9','UH-60'])
+      callsign      = CALLSIGNS_MILITARY[i % CALLSIGNS_MILITARY.length]
+      actype        = ['F-16','F-15','C-130','KC-135','MQ-9','UH-60'][i % 6]
       route         = null
-      originCountry = randItem(['United States','United Kingdom','Israel','France','Germany'])
+      originCountry = ['United States','United Kingdom','Israel','France','Germany','United States'][i % 6]
       speedKts      = randInt(300, 600)
       altFt         = randInt(1000, 35000)
     } else {
-      callsign      = randItem(CALLSIGNS_CIVILIAN)
-      actype        = randItem(['B77W','A320','A330','B737','A321','B787','A380'])
-      route         = Math.random() < 0.65
-        ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','MCT→BOM','DOH→ICN','DXB→ICN','RUH→ICN','AMM→ICN'])
+      const ci = i - 6
+      callsign      = CALLSIGNS_CIVILIAN[ci % CALLSIGNS_CIVILIAN.length]
+      actype        = ['B77W','A320','A330','B737','A321','B787','A380'][ci % 7]
+      route         = ci % 3 !== 0
+        ? ['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','MCT→BOM','DOH→ICN','DXB→ICN','RUH→ICN','AMM→ICN'][ci % 11]
         : null
-      originCountry = randItem(['Turkey','United Arab Emirates','Saudi Arabia','Qatar','Egypt','Germany','United Kingdom','India','Pakistan','Iran','Jordan','Greece','Russia','South Korea'])
+      originCountry = ['Turkey','United Arab Emirates','Saudi Arabia','Qatar','Egypt','Germany','United Kingdom','India','Pakistan','Iran','Jordan','Greece','Russia','South Korea','France'][ci % 15]
       speedKts      = randInt(400, 560)
       altFt         = randInt(28000, 43000)
     }
 
-    const coords = offsetCoord(center, 200)
     return {
-      // OpenSky-compatible fields
-      id:              randHex(6),          // icao24
+      id:              `mock-${i.toString().padStart(2, '0')}`,
       callsign,
       origin_country:  originCountry,
-      time_position:   Math.floor(Date.now() / 1000),
-      last_contact:    Math.floor(Date.now() / 1000),
-      lon:             coords[0],
-      lat:             coords[1],
-      coords,
-      baro_altitude:   Math.round(altFt * 0.3048),  // metres
+      baro_altitude:   Math.round(altFt * 0.3048),
       on_ground:       false,
-      velocity:        Math.round(speedKts * 0.514444),  // m/s
-      true_track:      Math.round(rand(0, 360)),
+      velocity:        Math.round(speedKts * 0.514444),
       vertical_rate:   Math.round(rand(-5, 5)),
-      squawk:          Math.floor(Math.random() * 8000).toString().padStart(4, '0'),
-      position_source: 0,  // ADS-B
-      // App fields
+      squawk:          (1000 + i * 233).toString().padStart(4, '0'),
+      position_source: 0,
       altitude:        altFt,
       speed:           speedKts,
+      // 5× real speed, converted to deg/s for physics engine
+      speedDegS:       speedKts * 5 * 1.852 / 3600 / 111,
       heading:         Math.round(rand(0, 360)),
+      targetHeading:   Math.round(rand(0, 360)), // initial turn target (will be updated by tick)
+      headingChange:   rand(5, 25),              // magnitude of last heading change (deg)
       actype,
       military:        isMilitary,
       route,
       registration:    '',
       originCountry,
+      // position will be set by generateAircraft / tickAircraft
+      coords:          [0, 0],
+      lon:             0,
+      lat:             0,
+      time_position:   Math.floor(Date.now() / 1000),
+      last_contact:    Math.floor(Date.now() / 1000),
     }
+  })
+}
+
+function generateAircraft(center) {
+  if (!mockFleet) mockFleet = buildMockFleet()
+  const now = Math.floor(Date.now() / 1000)
+  return mockFleet.map(ac => {
+    const coords = offsetCoord(center, 200)
+    const heading = Math.round(rand(0, 360))
+    return { ...ac, coords, lon: coords[0], lat: coords[1], heading, targetHeading: heading, time_position: now, last_contact: now }
   })
 }
 
@@ -375,26 +389,34 @@ function generateFires(center) {
   })
 }
 
-function tickAircraft(aircraft, center) {
-  const d = 1 / 111
-  const bound = 220
-  const speedDeg = 0.012  // ~1.3km/s in degrees
+// physics: animCurrentRef.current — used to read actual current position for bound check
+function tickAircraft(aircraft, center, physics) {
+  // Only updates targetHeading — position is driven by the physics engine in the anim loop
+  const BOUND = 2.5  // degrees from center before steering back to center
+  const now   = Math.floor(Date.now() / 1000)
   return aircraft.map(ac => {
-    const heading = (ac.heading + rand(-3, 3) + 360) % 360
-    const rad = (heading - 90) * (Math.PI / 180)
-    const coords = [
-      ac.coords[0] + Math.cos(rad) * speedDeg,
-      ac.coords[1] + Math.sin(rad) * speedDeg,
-    ]
-    const outOfBounds =
-      Math.abs(coords[0] - center[0]) / d > bound ||
-      Math.abs(coords[1] - center[1]) / d > bound
-    const now = Math.floor(Date.now() / 1000)
-    if (outOfBounds) {
-      const c = offsetCoord(center, 180)
-      return { ...ac, coords: c, lon: c[0], lat: c[1], heading: rand(0, 360), time_position: now, last_contact: now }
+    const phy    = physics[ac.id]
+    const curLon = phy?.lon ?? ac.lon
+    const curLat = phy?.lat ?? ac.lat
+    const curHdg = phy?.heading ?? ac.heading
+
+    const dLon = center[0] - curLon
+    const dLat = center[1] - curLat
+    const dist  = Math.sqrt(dLon * dLon + dLat * dLat)
+
+    let targetHeading, headingChange
+    if (dist > BOUND) {
+      // Steer back toward center
+      targetHeading = ((Math.atan2(dLon, dLat) * 180 / Math.PI) + 360) % 360
+      headingChange = ac.headingChange
+    } else {
+      // ±20% of previous change magnitude, clamped to realistic range (2–45°)
+      const prevChange = ac.headingChange || 10
+      headingChange = Math.max(2, Math.min(45, prevChange * (0.8 + Math.random() * 0.4)))
+      const sign    = Math.random() < 0.5 ? 1 : -1
+      targetHeading = (curHdg + sign * headingChange + 360) % 360
     }
-    return { ...ac, coords, lon: coords[0], lat: coords[1], heading, time_position: now, last_contact: now }
+    return { ...ac, targetHeading, headingChange, time_position: now, last_contact: now }
   })
 }
 
@@ -444,6 +466,13 @@ function getFilteredFires(data, hours) {
   const cutoff = Date.now() - hours * 3600 * 1000
   return data.filter(f => !f.acqTimestamp || f.acqTimestamp >= cutoff)
 }
+
+function lerp(a, b, t) { return a + (b - a) * t }
+function lerpAngle(a, b, t) {
+  const diff = ((b - a + 540) % 360) - 180
+  return (a + diff * t + 360) % 360
+}
+function easeInOut(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t }
 
 
 function toGeoJSONAircraft(data) {
@@ -619,6 +648,11 @@ export default function App() {
   const mockStateRef = useRef('stopped')
   const popupRef = useRef(null)
   const socketRef = useRef(null)
+  const animFrameRef = useRef(null)
+  const animCurrentRef = useRef({}) // id → { lat, lon, heading } (last rendered position)
+  const animToRef = useRef([])      // target aircraft list
+  const liveIntervalMsRef = useRef(100000) // measured interval between aircraft:update events
+  const lastAircraftUpdateRef = useRef(null)
 
   useEffect(() => { activeRegionRef.current = activeRegion }, [activeRegion])
   useEffect(() => { aircraftFilterRef.current = aircraftFilter }, [aircraftFilter])
@@ -928,12 +962,33 @@ export default function App() {
     socket.on('aircraft:update', (data) => {
       if (dataModeRef.current !== 'live') return
       aircraftDataRef.current = data
+      // Measure actual interval between updates to tune animation speed
+      const now = performance.now()
+      if (lastAircraftUpdateRef.current) {
+        const measured = now - lastAircraftUpdateRef.current
+        // Clamp to sane range (5s–300s) and smooth with EMA to avoid noise
+        if (measured > 5000 && measured < 300000)
+          liveIntervalMsRef.current = liveIntervalMsRef.current * 0.7 + measured * 0.3
+      }
+      lastAircraftUpdateRef.current = now
       const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) return
-      const filtered = getFilteredAircraft(data, aircraftFilterRef.current)
-      ensureAircraftLabels(filtered, map)
-      map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
-      setCounts(prev => ({ ...prev, aircraft: filtered.length }))
+      ensureAircraftLabels(data, map)
+      setCounts(prev => ({ ...prev, aircraft: getFilteredAircraft(data, aircraftFilterRef.current).length }))
+      data.forEach(ac => {
+        if (!animCurrentRef.current[ac.id]) {
+          // New aircraft: initialize at GPS position with actual ADS-B speed
+          animCurrentRef.current[ac.id] = {
+            lat: ac.lat, lon: ac.lon,
+            heading: ac.heading ?? 0,
+            headingRate: 0,
+            currentSpeed: (ac.speed ?? 0) * (1852 / 3600 / 111000), // knots → deg/s
+          }
+        }
+        // Existing aircraft: do NOT snap position — dead reckoning continues uninterrupted.
+        // Only heading/speed targets update via animToRef (read each frame in the loop).
+      })
+      animToRef.current = data
+      startAnimLoop(map)
     })
 
     socket.on('fires:update', (data) => {
@@ -946,7 +1001,10 @@ export default function App() {
       setCounts(prev => ({ ...prev, fires: filtered.length }))
     })
 
-    return () => socket.disconnect()
+    return () => {
+      cancelAnimationFrame(animFrameRef.current)
+      socket.disconnect()
+    }
   }, [])
 
   // ── 5. Region flyTo + mock reseed ────────────────────────────────────────
@@ -1005,12 +1063,97 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  // ── Continuous animation loop (unified physics engine) ───────────────────
+  // Heading : underdamped spring → natural slip on direction change
+  //   ζ = DAMP_S / (2√K_S) = 1.6/2 = 0.8  (lightly underdamped)
+  // Speed   : constant at target SPD; ease-in only on increase, ease-out on decrease
+  //   tau_accel (2s) < tau_decel (4s) — realistic aircraft feel
+  // Live    : position snapped to GPS on each update, velocity integrates between updates
+  const HDG_DAMP_S   = 1.6  // angular damping    (per second)
+  const HDG_K_S      = 1.0  // angular stiffness  (per second²)
+  const TAU_ACCEL    = 2.0  // speed increase time constant (seconds)
+  const TAU_DECEL    = 4.0  // speed decrease time constant (seconds)
+  const SPD_SNAP_EPS = 0.001 // fraction of target: within 0.1% → snap to target
+
+  function startAnimLoop(map) {
+    if (animFrameRef.current) return
+    let lastTime = null
+    const loop = (now) => {
+      const dtMs = lastTime ? Math.min(now - lastTime, 100) : 16
+      const dt_s = dtMs / 1000
+      lastTime = now
+
+      if (map?.isStyleLoaded()) {
+        const targets = animToRef.current
+        if (targets.length > 0) {
+          const isMock = dataModeRef.current === 'mock'
+          const rendered = targets.map(ac => {
+            // ── Init on first frame ────────────────────────────────────────
+            let cur = animCurrentRef.current[ac.id]
+            if (!cur) {
+              const initSpd = isMock ? 0 : (ac.velocity ?? 0) / 111000
+              animCurrentRef.current[ac.id] = {
+                lat: ac.lat, lon: ac.lon,
+                heading: ac.true_track ?? ac.heading ?? 0,
+                headingRate: 0,
+                currentSpeed: initSpd,
+              }
+              return { ...ac }
+            }
+
+            // ── Heading spring (same for mock & live) ─────────────────────
+            const targetHdg = ac.targetHeading ?? ac.heading ?? cur.heading
+            const diff = ((targetHdg - cur.heading + 540) % 360) - 180
+            const headingRate = cur.headingRate * Math.exp(-HDG_DAMP_S * dt_s)
+                              + diff * HDG_K_S * dt_s
+            const heading = (cur.heading + headingRate * dt_s + 360) % 360
+
+            // ── Speed: constant at SPD, ease only on change ────────────────
+            const targetSpd = isMock
+              ? (ac.speedDegS ?? 0.01)
+              : (ac.speed ?? 0) * (1852 / 3600 / 111000) // knots → deg/s
+            const speedDiff = targetSpd - cur.currentSpeed
+            const atTarget  = Math.abs(speedDiff) < targetSpd * SPD_SNAP_EPS
+            const tau        = speedDiff > 0 ? TAU_ACCEL : TAU_DECEL
+            const currentSpeed = atTarget
+              ? targetSpd
+              : cur.currentSpeed + speedDiff * (1 - Math.exp(-dt_s / tau))
+
+            // ── Position integration ───────────────────────────────────────
+            // heading: 0=North, 90=East, 180=South, 270=West (clockwise from North)
+            // lon += sin(heading), lat += cos(heading)
+            const dist = currentSpeed * dt_s
+            const rad  = heading * Math.PI / 180
+            const lon  = cur.lon + Math.sin(rad) * dist
+            const lat  = cur.lat + Math.cos(rad) * dist
+
+            animCurrentRef.current[ac.id] = { lat, lon, heading, headingRate, currentSpeed }
+            return { ...ac, lat, lon, coords: [lon, lat], heading }
+          })
+
+          const filtered = getFilteredAircraft(rendered, aircraftFilterRef.current)
+          map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
+        }
+      }
+      animFrameRef.current = requestAnimationFrame(loop)
+    }
+    animFrameRef.current = requestAnimationFrame(loop)
+  }
+
+  function stopAnimLoop() {
+    cancelAnimationFrame(animFrameRef.current)
+    animFrameRef.current = null
+  }
+
   // ── Mock controls ─────────────────────────────────────────────────────────
 
   function switchMode(mode) {
     if (mode === dataModeRef.current) return
-    dataModeRef.current = mode   // ref는 즉시, state는 re-render용
+    dataModeRef.current = mode
     clearInterval(mockIntervalRef.current)
+    stopAnimLoop()
+    animCurrentRef.current = {}
+    animToRef.current = []
     mockStateRef.current = 'stopped'
     setMockState('stopped')
     clearMapData()
@@ -1024,18 +1167,35 @@ export default function App() {
     const center = REGIONS[activeRegionRef.current].center
     aircraftDataRef.current = generateAircraft(center)
     fireDataRef.current = generateFires(center)
+    // Seed physics state from initial positions (speed=0 → ease-in starts here)
+    animCurrentRef.current = {}
+    aircraftDataRef.current.forEach(ac => {
+      animCurrentRef.current[ac.id] = { lat: ac.lat, lon: ac.lon, heading: ac.heading, headingRate: 0, currentSpeed: 0 }
+    })
+    animToRef.current = aircraftDataRef.current
     updateSources()
+    const mockMap = mapInstanceRef.current
+    ensureAircraftLabels(aircraftDataRef.current, mockMap)
+    startAnimLoop(mockMap)
     clearInterval(mockIntervalRef.current)
     mockIntervalRef.current = setInterval(() => {
       const c = REGIONS[activeRegionRef.current].center
-      aircraftDataRef.current = tickAircraft(aircraftDataRef.current, c)
+      // Pass physics state so tick can read actual current position for bound check
+      aircraftDataRef.current = tickAircraft(aircraftDataRef.current, c, animCurrentRef.current)
       fireDataRef.current = tickFires(fireDataRef.current, c)
-      updateSources()
-    }, 1000)
+      // Update target heading only — physics loop drives position
+      animToRef.current = aircraftDataRef.current
+      const map = mapInstanceRef.current
+      if (map?.isStyleLoaded()) {
+        const filtered = getFilteredAircraft(fireDataRef.current, fireHoursFilterRef.current)
+        map.getSource('fire-source')?.setData(toGeoJSONFires(filtered))
+      }
+    }, 10000)
   }
 
   function mockStop() {
     clearInterval(mockIntervalRef.current)
+    stopAnimLoop()
     mockStateRef.current = 'stopped'
     setMockState('stopped')
     downloadMockCSV(aircraftDataRef.current)
