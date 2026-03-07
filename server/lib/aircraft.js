@@ -249,8 +249,10 @@ const CONFIRMED_MILITARY_HEX_RANGES = [
   { min: 0xAE0000, max: 0xAEFFFF, note: 'US Air Force' },
   { min: 0x43C000, max: 0x43CFFF, note: 'UK Military (RAF)' },
   { min: 0x3A8000, max: 0x3AFFFF, note: 'French Air Force' },
-  { min: 0x710000, max: 0x71FFFF, note: 'Israeli Air Force (IAF)' },
-  { min: 0x730000, max: 0x73FFFF, note: 'Saudi military (RSAF)' },
+  // NOTE: 0x710000–0x71FFFF = Saudi Arabia civilian (not IAF)
+  // NOTE: 0x730000–0x73FFFF = Syria civilian (not Saudi military)
+  // IAF and RSAF military hex blocks are not cleanly separable from civilian
+  // allocations without a curated per-aircraft database — skip to avoid false positives
 ]
 
 /** Returns 'military' | 'suspected' | 'civilian' */
