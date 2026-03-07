@@ -192,7 +192,7 @@ function parseCSVLine(line) {
 
 async function fetchAirports() {
   try {
-    const res = await axios.get('https://ourairports.com/data/airports.csv', { timeout: 30000 })
+    const res = await axios.get('https://davidmegginson.github.io/ourairports-data/airports.csv', { timeout: 30000 })
     const lines = res.data.trim().split('\n')
     const headers = parseCSVLine(lines[0]).map(h => h.replace(/"/g, '').trim())
 
