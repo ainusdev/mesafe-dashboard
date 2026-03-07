@@ -668,6 +668,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
+    connections: io.engine.clientsCount,
     counts: {
       aircraft: aircraftData.length,
       fires: fireData.length,
