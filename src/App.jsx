@@ -75,16 +75,31 @@ function makeMilitarySVG(color) {
   )}`
 }
 
-const CALLSIGNS = [
+// Civilian callsigns (airline code + flight number → trip.com link works)
+const CALLSIGNS_CIVILIAN = [
+  'EK471','EK828','FZ204','QR541','QR007','EY302','MS903',
+  'GF452','TK788','GF103','SV872','WY513','ME342',
+]
+// Korean carrier callsigns
+const CALLSIGNS_KOREAN = [
+  'KAL001','KAL851','KAL958','AAR271','AAR603','JJA151','JJA225','ABL661',
+]
+// Military callsigns
+const CALLSIGNS_MILITARY = [
   'EAGLE-1','EAGLE-2','VIPER-1','VIPER-3','HAWK-7','HAWK-9',
-  'COBRA-2','COBRA-4','FALCON-5','GHOST-3','GHOST-6',
-  'BANDIT-1','RAVEN-2','RAVEN-4','WOLF-1','UAE123','EK471',
-  'FZ204','MS903','GF452','TK788','QR541','EY302',
-  'KAL001','KAL851','AAR271','JJA151','ABL661',
+  'COBRA-2','COBRA-4','FALCON-5','GHOST-3','RAVEN-2','WOLF-1',
+]
+// Private jets — hex IDs (no real callsign → shows as private)
+const CALLSIGNS_PRIVATE = [
+  '740123','896185','a3f200','730b4c','710e91','ae1234','3a8bc0',
 ]
 
 const KOREAN_AIRPORT_CODES = new Set(['RKSI','RKSS','RKPK','RKTN','RKJJ','ICN','GMP','PUS','TAE','CJU'])
 const KOREAN_CARRIER_PREFIXES = ['KAL','AAR','JJA','ABL','TWB','ESR']
+
+function isRealCallsign(callsign) {
+  return /^[A-Z]{2,3}\d{1,4}[A-Z]?$/i.test((callsign || '').trim())
+}
 
 // ─── Pure utility functions ────────────────────────────────────────────────
 
@@ -98,18 +113,46 @@ function offsetCoord(center, rangeKm) {
 }
 
 function generateAircraft(center) {
-  return Array.from({ length: randInt(15, 25) }, (_, i) => ({
-    id: `ac-${Date.now()}-${i}`,
-    coords: offsetCoord(center, 200),
-    heading: rand(0, 360),
-    speed: rand(0.008, 0.018),
-    callsign: randItem(CALLSIGNS),
-    altitude: randInt(5000, 45000),
-    actype: randItem(['B77W', 'A320', 'A330', 'F-16', 'C-130', 'UH-60', 'MQ-9']),
-    military: Math.random() < 0.3,
-    route: Math.random() < 0.6 ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','DOH→ICN','DXB→ICN','MCT→GMP','AUH→ICN','RUH→ICN']) : null,
-    registration: '',
-  }))
+  const count = randInt(20, 30)
+  return Array.from({ length: count }, (_, i) => {
+    const r = Math.random()
+    // ~20% military, ~15% private, ~15% Korean carrier, ~50% civilian
+    const isMilitary = r < 0.20
+    const isPrivate  = r < 0.35 && !isMilitary
+    const isKorean   = r < 0.50 && !isMilitary && !isPrivate
+
+    let callsign, route, actype
+    if (isMilitary) {
+      callsign = randItem(CALLSIGNS_MILITARY)
+      actype   = randItem(['F-16','F-15','C-130','B-52','MQ-9','UH-60'])
+      route    = null
+    } else if (isPrivate) {
+      callsign = randItem(CALLSIGNS_PRIVATE)
+      actype   = randItem(['G650','C560','PC12','E135'])
+      route    = null
+    } else if (isKorean) {
+      callsign = randItem(CALLSIGNS_KOREAN)
+      actype   = randItem(['B77W','A380','B787','A330'])
+      route    = Math.random() < 0.8 ? randItem(['DOH→ICN','DXB→ICN','MCT→GMP','AUH→ICN','RUH→ICN','AMM→ICN']) : null
+    } else {
+      callsign = randItem(CALLSIGNS_CIVILIAN)
+      actype   = randItem(['B77W','A320','A330','B737','A321'])
+      route    = Math.random() < 0.6 ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','MCT→BOM']) : null
+    }
+
+    return {
+      id: `ac-${Date.now()}-${i}`,
+      coords: offsetCoord(center, 200),
+      heading: rand(0, 360),
+      speed: rand(0.008, 0.018),
+      callsign,
+      altitude: randInt(isMilitary ? 1000 : 20000, 45000),
+      actype,
+      military: isMilitary,
+      route,
+      registration: '',
+    }
+  })
 }
 
 function generateFires(center) {
@@ -222,6 +265,7 @@ function toGeoJSONAircraft(data) {
         actype: ac.actype || 'UNKNOWN',
         military: ac.military ? 1 : 0,
         korean: isKoreaBound(ac) ? 1 : 0,
+        hasCallsign: isRealCallsign(ac.callsign) ? 1 : 0,
         route: ac.route || '',
         registration: ac.registration || '',
       },
@@ -250,10 +294,11 @@ function toGeoJSONFires(data) {
 }
 
 function buildAircraftPopupHTML(props) {
-  const isKorean = props.korean === 1 || props.korean === true
-  const isMil = props.military === 1 || props.military === true
-  const acColor = isKorean ? '#f59e0b' : isMil ? '#ef4444' : '#4ade80'
-  const acLabel = isKorean ? '🇰🇷 KOREA BOUND' : isMil ? '🔴 MILITARY' : '🟢 CIVILIAN'
+  const isKorean  = props.korean      === 1 || props.korean      === true
+  const isMil     = props.military    === 1 || props.military    === true
+  const isPrivate = props.hasCallsign === 0 || props.hasCallsign === false
+  const acColor = isMil ? '#ef4444' : isPrivate ? '#c4b5fd' : '#4ade80'
+  const acLabel = isMil ? '🔴 MILITARY' : isKorean ? '🇰🇷 KOREAN CARRIER' : isPrivate ? '🟣 PRIVATE JET' : '🟢 CIVILIAN'
   const altFt = typeof props.altitude === 'number' ? props.altitude.toLocaleString() : props.altitude
   const spd = typeof props.speed === 'number' ? `${Math.round(props.speed)} kts` : '—'
 
@@ -270,14 +315,27 @@ function buildAircraftPopupHTML(props) {
       <div><span style="color:#6b7280">ALT:</span> ${altFt} ft</div>
       <div><span style="color:#6b7280">SPD:</span> ${spd}</div>
       <div><span style="color:#6b7280">HDG:</span> ${Math.round(props.heading || 0)}°</div>
-      ${props.callsign ? `
-      <div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
-        <a href="https://www.trip.com/flights/status-${props.callsign.trim().toLowerCase()}/"
-          target="_blank" rel="noopener noreferrer"
-          style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
-          ↗ 스케줄 보기 (trip.com)
-        </a>
-      </div>` : ''}
+      ${(() => {
+        const cs = (props.callsign || '').trim()
+        if (/^[A-Z]{2}\d{1,4}[A-Z]?$/i.test(cs)) {
+          return `<div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
+            <a href="https://www.trip.com/flights/status-${cs.toLowerCase()}/"
+              target="_blank" rel="noopener noreferrer"
+              style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
+              ↗ 스케줄 보기 (trip.com)
+            </a>
+          </div>`
+        } else if (/^[A-Z]{3}\d{1,4}[A-Z]?$/i.test(cs)) {
+          return `<div style="margin-top:8px;border-top:1px solid rgba(74,222,128,0.15);padding-top:6px">
+            <a href="https://www.flightaware.com/live/flight/${cs.toUpperCase()}"
+              target="_blank" rel="noopener noreferrer"
+              style="color:#60a5fa;font-size:10px;text-decoration:none;letter-spacing:0.05em">
+              ↗ 스케줄 보기 (FlightAware)
+            </a>
+          </div>`
+        }
+        return ''
+      })()}
       <div style="margin-top:5px;color:rgba(74,222,128,0.4);font-size:10px">ADS-B // SIMULATED DATA</div>
     </div>`
 }
@@ -451,6 +509,7 @@ export default function App() {
         loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80'),
         loadIcon('aircraft-military', makeMilitarySVG, '#ef4444'),
         loadIcon('aircraft-korean',   makeCivilianSVG, '#f59e0b'),
+        loadIcon('aircraft-private',  makeCivilianSVG, '#c4b5fd'),
       ]).then(() => {
         // ── Aircraft ──
         map.addSource('aircraft-source', {
@@ -463,15 +522,18 @@ export default function App() {
           source: 'aircraft-source',
           layout: {
             'icon-image': ['case',
-              ['==', ['get', 'korean'],   1], 'aircraft-korean',
-              ['==', ['get', 'military'], 1], 'aircraft-military',
+              ['==', ['get', 'military'],   1], 'aircraft-military',
+              ['==', ['get', 'hasCallsign'],0], 'aircraft-private',
               'aircraft-civilian',
             ],
             'icon-size': 1,
             'icon-rotate': ['get', 'heading'],
             'icon-rotation-alignment': 'map',
             'icon-allow-overlap': true,
-            'text-field': ['get', 'callsign'],
+            'text-field': ['case',
+              ['==', ['get', 'korean'], 1], ['concat', '🇰🇷 ', ['get', 'callsign']],
+              ['get', 'callsign'],
+            ],
             'text-offset': [0, 1.6],
             'text-size': 10,
             'text-anchor': 'top',
@@ -480,8 +542,8 @@ export default function App() {
           },
           paint: {
             'text-color': ['case',
-              ['==', ['get', 'korean'],   1], '#f59e0b',
-              ['==', ['get', 'military'], 1], '#ef4444',
+              ['==', ['get', 'military'],   1], '#ef4444',
+              ['==', ['get', 'hasCallsign'],0], '#c4b5fd',
               '#4ade80',
             ],
             'text-halo-color': 'rgba(0,0,0,0.85)',

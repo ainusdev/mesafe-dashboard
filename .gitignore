@@ -3,4 +3,5 @@ dist/
 server/node_modules/
 server/.env
 server/serviceAccount.json
+server/opensky_dumps/
 .env

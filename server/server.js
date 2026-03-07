@@ -4,6 +4,8 @@ const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
 const axios = require('axios')
+const fs = require('fs')
+const path = require('path')
 
 // ─── Logger ──────────────────────────────────────────────────────────────────
 
@@ -414,6 +416,36 @@ async function enrichRoutesInBackground(snapshot) {
   }
 }
 
+// ─── OpenSky CSV export ───────────────────────────────────────────────────────
+
+const OPENSKY_CSV_HEADERS = [
+  'icao24','callsign','origin_country','time_position','last_contact',
+  'longitude','latitude','baro_altitude','on_ground','velocity',
+  'true_track','vertical_rate','sensors','geo_altitude','squawk','spi','position_source',
+]
+
+function saveOpenSkyCSV(states) {
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const dir = path.join(__dirname, 'opensky_dumps')
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir)
+
+    const csvPath = path.join(dir, `opensky_${ts}.csv`)
+    const rows = [OPENSKY_CSV_HEADERS.join(',')]
+    for (const sv of states) {
+      rows.push(sv.map(v => {
+        if (v === null || v === undefined) return ''
+        const s = String(v)
+        return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s
+      }).join(','))
+    }
+    fs.writeFileSync(csvPath, rows.join('\n'), 'utf8')
+    log('OpenSky', `Saved ${states.length} rows → opensky_dumps/opensky_${ts}.csv`)
+  } catch (err) {
+    log('OpenSky', `CSV save error: ${err.message}`, 'error')
+  }
+}
+
 async function fetchAircraft() {
   try {
     const headers = await getAuthHeaders()
@@ -447,6 +479,8 @@ async function fetchAircraft() {
       log('OpenSky', 'No states returned', 'warn')
       return
     }
+
+    saveOpenSkyCSV(res.data.states)
 
     const parsed = res.data.states
       .map(parseStateVector)
