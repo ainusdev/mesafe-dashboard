@@ -57,8 +57,8 @@ const PORT = process.env.PORT || 3001
 
 // ─── In-memory state ─────────────────────────────────────────────────────────
 
-let aircraftData = []
-let fireData = []
+let aircraftData = process.env.SAVE_OPENSKY_CSV === 'true' ? loadLatestOpenSkyCSV() : []
+let fireData = process.env.SAVE_FIRMS_CSV === 'true' ? loadLatestFireCSV() : []
 let airportData = []
 let db = null
 
@@ -446,6 +446,85 @@ function saveOpenSkyCSV(states) {
   }
 }
 
+function loadLatestOpenSkyCSV() {
+  try {
+    const dir = path.join(__dirname, 'opensky_dumps')
+    if (!fs.existsSync(dir)) return []
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('opensky_') && f.endsWith('.csv')).sort()
+    if (files.length === 0) return []
+    const latest = path.join(dir, files[files.length - 1])
+    const lines = fs.readFileSync(latest, 'utf8').trim().split('\n')
+    if (lines.length < 2) return []
+    // Reconstruct state vectors (CSV columns match OPENSKY_CSV_HEADERS order)
+    const aircraft = lines.slice(1).map(line => {
+      const sv = line.split(',').map((v, i) => {
+        if (v === '' || v === 'null') return null
+        if ([3,4,7,9,10,11,13,16].includes(i)) return parseFloat(v)
+        if (i === 8) return v === 'true'
+        return v
+      })
+      return parseStateVector(sv)
+    }).filter(Boolean).filter(ac => !ac.onGround)
+    log('OpenSky', `Loaded ${aircraft.length} aircraft from ${files[files.length - 1]}`)
+    return aircraft
+  } catch (err) {
+    log('OpenSky', `CSV load error: ${err.message}`, 'error')
+    return []
+  }
+}
+
+const FIRMS_CSV_HEADERS = ['id','lon','lat','brightness','frp','confidence','acqDate','acqTime','acqTimestamp','intensity']
+
+function saveFireCSV(fires) {
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const dir = path.join(__dirname, 'firms_dumps')
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir)
+    const csvPath = path.join(dir, `firms_${ts}.csv`)
+    const rows = [FIRMS_CSV_HEADERS.join(',')]
+    for (const f of fires) {
+      rows.push([f.id, f.coords[0], f.coords[1], f.brightness, f.frp, f.confidence, f.acqDate, f.acqTime, f.acqTimestamp, f.intensity].join(','))
+    }
+    fs.writeFileSync(csvPath, rows.join('\n'), 'utf8')
+    log('FIRMS', `Saved ${fires.length} rows → firms_dumps/firms_${ts}.csv`)
+  } catch (err) {
+    log('FIRMS', `CSV save error: ${err.message}`, 'error')
+  }
+}
+
+function loadLatestFireCSV() {
+  try {
+    const dir = path.join(__dirname, 'firms_dumps')
+    if (!fs.existsSync(dir)) return []
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('firms_') && f.endsWith('.csv')).sort()
+    if (files.length === 0) return []
+    const latest = path.join(dir, files[files.length - 1])
+    const lines = fs.readFileSync(latest, 'utf8').trim().split('\n')
+    if (lines.length < 2) return []
+    const fires = []
+    for (let i = 1; i < lines.length; i++) {
+      const v = lines[i].split(',')
+      if (v.length < 10) continue
+      fires.push({
+        id: v[0],
+        coords: [parseFloat(v[1]), parseFloat(v[2])],
+        brightness: parseFloat(v[3]),
+        frp: parseFloat(v[4]),
+        confidence: v[5],
+        acqDate: v[6],
+        acqTime: v[7],
+        acqTimestamp: parseInt(v[8], 10),
+        intensity: v[9],
+      })
+    }
+    log('FIRMS', `Loaded ${fires.length} hotspots from ${files[files.length - 1]}`)
+    return fires
+  } catch (err) {
+    log('FIRMS', `CSV load error: ${err.message}`, 'error')
+    return []
+  }
+}
+
 async function fetchAircraft() {
   try {
     const headers = await getAuthHeaders()
@@ -480,12 +559,12 @@ async function fetchAircraft() {
       return
     }
 
-    saveOpenSkyCSV(res.data.states)
+    if (process.env.SAVE_OPENSKY_CSV === 'true') saveOpenSkyCSV(res.data.states)
 
-    const parsed = res.data.states
-      .map(parseStateVector)
-      .filter(Boolean)
-      .filter(ac => !ac.onGround)
+    const parsed = (process.env.SAVE_OPENSKY_CSV === 'true'
+      ? loadLatestOpenSkyCSV()
+      : res.data.states.map(parseStateVector).filter(Boolean).filter(ac => !ac.onGround)
+    )
 
     // Apply any already-cached routes before the first emit
     aircraftData = parsed.map(ac => {
@@ -568,13 +647,15 @@ async function fetchFIRMS() {
       })
     }
 
-    fireData = fires
-    io.emit('fires:update', fireData)
-    log('FIRMS', `${fireData.length} fire hotspots`)
+    if (process.env.SAVE_FIRMS_CSV === 'true') saveFireCSV(fires)
 
     saveFiresToFirestore(fires).catch(err =>
       log('Firestore', `Save error: ${err.message}`, 'error')
     )
+
+    fireData = process.env.SAVE_FIRMS_CSV === 'true' ? loadLatestFireCSV() : fires
+    io.emit('fires:update', fireData)
+    log('FIRMS', `${fireData.length} fire hotspots`)
   } catch (err) {
     log('FIRMS', `Fetch error: ${err.message}`, 'error')
   }
