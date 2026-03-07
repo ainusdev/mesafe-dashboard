@@ -596,7 +596,7 @@ export default function App() {
     const saved = localStorage.getItem('mesafe_region')
     return (saved && REGIONS[saved]) ? saved : 'IRAN'
   })
-  const [layers, setLayers] = useState({ aircraft: true, fires: true, airports: true })
+  const [layers, setLayers] = useState({ aircraft: true, fires: true, airports: true, airportsOther: false })
   const [counts, setCounts] = useState({ aircraft: 0, fires: 0 })
   const [fireHoursFilter, setFireHoursFilter] = useState(24)
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -775,21 +775,15 @@ export default function App() {
           type: 'geojson',
           data: { type: 'FeatureCollection', features: [] },
         })
+        // International airports (large_airport) — visible by default
         map.addLayer({
           id: 'airport-circle-layer',
           type: 'circle',
           source: 'airport-source',
+          filter: ['==', ['get', 'type'], 'large_airport'],
           paint: {
-            'circle-radius': ['match', ['get', 'type'],
-              'large_airport',  6,
-              'medium_airport', 4,
-              3,
-            ],
-            'circle-color': ['match', ['get', 'type'],
-              'large_airport',  '#60a5fa',
-              'medium_airport', '#94a3b8',
-              '#475569',
-            ],
+            'circle-radius': 6,
+            'circle-color': '#60a5fa',
             'circle-opacity': 0.9,
             'circle-stroke-width': 1,
             'circle-stroke-color': 'rgba(0,0,0,0.6)',
@@ -799,7 +793,8 @@ export default function App() {
           id: 'airport-label-layer',
           type: 'symbol',
           source: 'airport-source',
-          minzoom: 7,
+          filter: ['==', ['get', 'type'], 'large_airport'],
+          minzoom: 6,
           layout: {
             'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
             'text-size': 10,
@@ -809,7 +804,44 @@ export default function App() {
             'text-allow-overlap': false,
           },
           paint: {
-            'text-color': '#94a3b8',
+            'text-color': '#60a5fa',
+            'text-halo-color': 'rgba(0,0,0,0.9)',
+            'text-halo-width': 1,
+          },
+        })
+
+        // Other airports (medium + small) — hidden by default
+        map.addLayer({
+          id: 'airport-other-circle-layer',
+          type: 'circle',
+          source: 'airport-source',
+          filter: ['!=', ['get', 'type'], 'large_airport'],
+          layout: { visibility: 'none' },
+          paint: {
+            'circle-radius': ['match', ['get', 'type'], 'medium_airport', 4, 3],
+            'circle-color': ['match', ['get', 'type'], 'medium_airport', '#94a3b8', '#475569'],
+            'circle-opacity': 0.8,
+            'circle-stroke-width': 1,
+            'circle-stroke-color': 'rgba(0,0,0,0.6)',
+          },
+        })
+        map.addLayer({
+          id: 'airport-other-label-layer',
+          type: 'symbol',
+          source: 'airport-source',
+          filter: ['!=', ['get', 'type'], 'large_airport'],
+          minzoom: 8,
+          layout: {
+            visibility: 'none',
+            'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
+            'text-size': 9,
+            'text-offset': [0, 1.1],
+            'text-anchor': 'top',
+            'text-optional': true,
+            'text-allow-overlap': false,
+          },
+          paint: {
+            'text-color': '#64748b',
             'text-halo-color': 'rgba(0,0,0,0.9)',
             'text-halo-width': 1,
           },
@@ -832,6 +864,7 @@ export default function App() {
         bindPopup('aircraft-layer', buildAircraftPopupHTML)
         bindPopup('fire-circle-layer', buildFirePopupHTML)
         bindPopup('airport-circle-layer', buildAirportPopupHTML)
+        bindPopup('airport-other-circle-layer', buildAirportPopupHTML)
 
         setMapLoaded(true)
 
@@ -1019,6 +1052,7 @@ export default function App() {
       aircraft: ['aircraft-layer', 'label-layer'],
       fires: ['fire-heat-layer', 'fire-circle-layer'],
       airports: ['airport-circle-layer', 'airport-label-layer'],
+      airportsOther: ['airport-other-circle-layer', 'airport-other-label-layer'],
     }
     Object.entries(layers).forEach(([key, visible]) => {
       layerMap[key]?.forEach(id => {
@@ -1196,9 +1230,10 @@ export default function App() {
             <span className="text-green-400/50 text-xs tracking-widest">LAYER CONTROL</span>
           </div>
           {[
-            { key: 'aircraft', label: 'ADS-B TRACKS',  count: counts.aircraft, icon: '✈' },
-            { key: 'fires',    label: 'FIRE HOTSPOTS', count: counts.fires,    icon: '🔥' },
-            { key: 'airports', label: 'AIRPORTS',      count: null,            icon: '🛬' },
+            { key: 'aircraft',      label: 'ADS-B TRACKS',  count: counts.aircraft, icon: '✈' },
+            { key: 'fires',         label: 'FIRE HOTSPOTS', count: counts.fires,    icon: '🔥' },
+            { key: 'airports',      label: 'INTL AIRPORTS', count: null,            icon: '🛬' },
+            { key: 'airportsOther', label: 'OTHER AIRPORTS', count: null,           icon: '🛩' },
           ].map(({ key, label, count, icon }) => (
             <button key={key} onClick={() => toggleLayer(key)}
               className={`flex items-center justify-between px-3 py-2 border text-xs tracking-wide transition-all
