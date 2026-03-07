@@ -52,38 +52,22 @@ function formatTZ(date, tz) {
 }
 
 /** ISO alpha-2 → flag emoji via Regional Indicator characters (U+1F1E6…) */
-function isoToFlagEmoji(code) {
-  return [...code.toUpperCase()].map(c =>
-    String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65)
-  ).join('')
-}
+// Track requested flag IDs to avoid duplicate loadImage calls
+const _flagRequested = new Set()
 
-/** Render flag emoji as a canvas image — bypasses Mapbox SDF font limit for color emoji. */
-function makeFlagImage(isoCode) {
-  const canvas = document.createElement('canvas')
-  const ctx = canvas.getContext('2d')
-  const fs = 14
-  const flagEmoji = isoToFlagEmoji(isoCode)
-  const w = Math.ceil(fs * 1.6)
-  const h = fs + 4
-  canvas.width = w
-  canvas.height = h
-  ctx.font = `${fs}px sans-serif`
-  ctx.textBaseline = 'middle'
-  ctx.textAlign = 'center'
-  ctx.fillText(flagEmoji, w / 2, h / 2)
-  return { width: w, height: h, data: new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer) }
-}
-
-/** Register any missing flag images into the Mapbox map instance. */
+/** Async load flag PNG from CDN — non-blocking, browser-cached. */
 function ensureAircraftLabels(aircraft, map) {
   if (!map?.isStyleLoaded()) return
   aircraft.forEach(ac => {
     const code = COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || ''
-    if (code) {
-      const id = `flag-${code}`
-      if (!map.hasImage(id)) map.addImage(id, makeFlagImage(code))
-    }
+    if (!code) return
+    const id = `flag-${code}`
+    if (map.hasImage(id) || _flagRequested.has(id)) return
+    _flagRequested.add(id)
+    map.loadImage(
+      `https://flagcdn.com/20x15/${code.toLowerCase()}.png`,
+      (err, img) => { if (!err && img) map.addImage(id, img) }
+    )
   })
 }
 
