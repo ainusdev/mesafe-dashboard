@@ -17,6 +17,7 @@ const C = {
   magenta:'\x1b[35m',
   red:    '\x1b[31m',
   orange: '\x1b[38;5;208m',
+  lime:   '\x1b[92m',
   bold:   '\x1b[1m',
 }
 
@@ -26,6 +27,7 @@ const TAG_COLOR = {
   Routes:    C.blue,
   FIRMS:     C.green,
   Firestore: C.magenta,
+  Airports:  C.lime,
   Socket:    C.orange,
 }
 
@@ -55,6 +57,7 @@ const PORT = process.env.PORT || 3001
 
 let aircraftData = []
 let fireData = []
+let airportData = []
 let db = null
 
 // ─── Firestore ────────────────────────────────────────────────────────────────
@@ -107,6 +110,63 @@ async function saveFiresToFirestore(fires) {
     await batch.commit()
   }
   log('Firestore', `${fires.length} hotspots saved`)
+}
+
+// ─── OurAirports — Middle East ───────────────────────────────────────────────
+
+const ME_COUNTRIES = new Set(['IR','IQ','SA','AE','QA','KW','BH','OM','YE','JO','LB','SY','IL','PS'])
+
+function parseCSVLine(line) {
+  const result = []
+  let cur = '', inQ = false
+  for (const ch of line) {
+    if (ch === '"') { inQ = !inQ }
+    else if (ch === ',' && !inQ) { result.push(cur); cur = '' }
+    else { cur += ch }
+  }
+  result.push(cur)
+  return result
+}
+
+async function fetchAirports() {
+  try {
+    const res = await axios.get('https://ourairports.com/data/airports.csv', { timeout: 30000 })
+    const lines = res.data.trim().split('\n')
+    const headers = parseCSVLine(lines[0]).map(h => h.replace(/"/g, '').trim())
+
+    const airports = []
+    for (let i = 1; i < lines.length; i++) {
+      const vals = parseCSVLine(lines[i])
+      if (vals.length < headers.length) continue
+
+      const row = {}
+      headers.forEach((h, idx) => { row[h] = (vals[idx] || '').replace(/"/g, '').trim() })
+
+      if (!ME_COUNTRIES.has(row.iso_country)) continue
+      if (!['large_airport', 'medium_airport', 'small_airport'].includes(row.type)) continue
+
+      const lat = parseFloat(row.latitude_deg)
+      const lon = parseFloat(row.longitude_deg)
+      if (isNaN(lat) || isNaN(lon)) continue
+
+      airports.push({
+        id:           row.ident,
+        name:         row.name,
+        iata:         row.iata_code || '',
+        icao:         row.ident,
+        type:         row.type,
+        country:      row.iso_country,
+        municipality: row.municipality || '',
+        coords:       [lon, lat],
+        elevation:    parseInt(row.elevation_ft) || 0,
+      })
+    }
+
+    airportData = airports
+    log('Airports', `${airports.length} airports loaded (Middle East)`)
+  } catch (err) {
+    log('Airports', `Fetch error: ${err.message}`, 'error')
+  }
 }
 
 // ─── OpenSky Network REST API ─────────────────────────────────────────────────
@@ -502,6 +562,7 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/aircraft', (req, res) => res.json(aircraftData))
 app.get('/api/fires', (req, res) => res.json(fireData))
+app.get('/api/airports/me', (req, res) => res.json(airportData))
 
 app.get('/api/airports', async (req, res) => {
   try {
@@ -549,10 +610,13 @@ server.listen(PORT, async () => {
   initFirestore()
 
   // Initial data fetch
-  await Promise.all([fetchAircraft(), fetchFIRMS()])
+  await Promise.all([fetchAircraft(), fetchFIRMS(), fetchAirports()])
 
   // Scheduled intervals
   setInterval(fetchAircraft, 22_000)   // Every 22s (4000 req/day limit)
   setInterval(fetchFIRMS, 10_000)      // Every 10s (FIRMS limit: 5000/10min)
+  setInterval(async () => {            // Retry airports if initial fetch failed
+    if (airportData.length === 0) await fetchAirports()
+  }, 60_000)
 
 })

@@ -80,7 +80,11 @@ const CALLSIGNS = [
   'COBRA-2','COBRA-4','FALCON-5','GHOST-3','GHOST-6',
   'BANDIT-1','RAVEN-2','RAVEN-4','WOLF-1','UAE123','EK471',
   'FZ204','MS903','GF452','TK788','QR541','EY302',
+  'KAL001','KAL851','AAR271','JJA151','ABL661',
 ]
+
+const KOREAN_AIRPORT_CODES = new Set(['RKSI','RKSS','RKPK','RKTN','RKJJ','ICN','GMP','PUS','TAE','CJU'])
+const KOREAN_CARRIER_PREFIXES = ['KAL','AAR','JJA','ABL','TWB','ESR']
 
 // ─── Pure utility functions ────────────────────────────────────────────────
 
@@ -103,7 +107,7 @@ function generateAircraft(center) {
     altitude: randInt(5000, 45000),
     actype: randItem(['B77W', 'A320', 'A330', 'F-16', 'C-130', 'UH-60', 'MQ-9']),
     military: Math.random() < 0.3,
-    route: Math.random() < 0.6 ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR']) : null,
+    route: Math.random() < 0.6 ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR','DOH→ICN','DXB→ICN','MCT→GMP','AUH→ICN','RUH→ICN']) : null,
     registration: '',
   }))
 }
@@ -194,6 +198,15 @@ function getFilteredFires(data, hours) {
   return data.filter(f => !f.acqTimestamp || f.acqTimestamp >= cutoff)
 }
 
+function isKoreaBound(ac) {
+  if (ac.route) {
+    const dest = ac.route.split('→').pop().trim().toUpperCase()
+    if (KOREAN_AIRPORT_CODES.has(dest)) return true
+  }
+  const cs = (ac.callsign || '').toUpperCase()
+  return KOREAN_CARRIER_PREFIXES.some(p => cs.startsWith(p))
+}
+
 function toGeoJSONAircraft(data) {
   return {
     type: 'FeatureCollection',
@@ -208,6 +221,7 @@ function toGeoJSONAircraft(data) {
         speed: ac.speed || 0,
         actype: ac.actype || 'UNKNOWN',
         military: ac.military ? 1 : 0,
+        korean: isKoreaBound(ac) ? 1 : 0,
         route: ac.route || '',
         registration: ac.registration || '',
       },
@@ -236,9 +250,10 @@ function toGeoJSONFires(data) {
 }
 
 function buildAircraftPopupHTML(props) {
+  const isKorean = props.korean === 1 || props.korean === true
   const isMil = props.military === 1 || props.military === true
-  const acColor = isMil ? '#ef4444' : '#4ade80'
-  const acLabel = isMil ? '🔴 MILITARY' : '🟢 CIVILIAN'
+  const acColor = isKorean ? '#f59e0b' : isMil ? '#ef4444' : '#4ade80'
+  const acLabel = isKorean ? '🇰🇷 KOREA BOUND' : isMil ? '🔴 MILITARY' : '🟢 CIVILIAN'
   const altFt = typeof props.altitude === 'number' ? props.altitude.toLocaleString() : props.altitude
   const spd = typeof props.speed === 'number' ? `${Math.round(props.speed)} kts` : '—'
 
@@ -297,6 +312,24 @@ function buildFirePopupHTML(props) {
     </div>`
 }
 
+function buildAirportPopupHTML(props) {
+  const typeColor = { large_airport: '#60a5fa', medium_airport: '#94a3b8', small_airport: '#475569' }[props.type] || '#4ade80'
+  const typeLabel = { large_airport: 'LARGE', medium_airport: 'MEDIUM', small_airport: 'SMALL' }[props.type] || props.type
+  return `
+    <div style="font-family:'Courier New',monospace;font-size:11px;line-height:1.7;color:#4ade80">
+      <div style="color:${typeColor};font-size:13px;font-weight:bold;margin-bottom:6px;
+                  border-bottom:1px solid ${typeColor}44;padding-bottom:4px">
+        ✈ ${props.iata || props.icao || '???'}
+      </div>
+      <div><span style="color:#6b7280">NAME:</span> <span style="color:#e5e7eb">${props.name}</span></div>
+      <div><span style="color:#6b7280">ICAO:</span> ${props.icao || '—'}</div>
+      <div><span style="color:#6b7280">IATA:</span> ${props.iata || '—'}</div>
+      <div><span style="color:#6b7280">CITY:</span> ${props.municipality || '—'}</div>
+      <div><span style="color:#6b7280">TYPE:</span> <span style="color:${typeColor}">${typeLabel}</span></div>
+      <div><span style="color:#6b7280">ELEV:</span> ${props.elevation ? props.elevation + ' ft' : '—'}</div>
+    </div>`
+}
+
 // ─── App ───────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -304,7 +337,7 @@ export default function App() {
     const saved = localStorage.getItem('mesafe_region')
     return (saved && REGIONS[saved]) ? saved : 'IRAN'
   })
-  const [layers, setLayers] = useState({ aircraft: true, fires: true })
+  const [layers, setLayers] = useState({ aircraft: true, fires: true, airports: true })
   const [counts, setCounts] = useState({ aircraft: 0, fires: 0 })
   const [fireHoursFilter, setFireHoursFilter] = useState(24)
   const [currentTime, setCurrentTime] = useState(new Date())
@@ -315,6 +348,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [dataMode, setDataMode] = useState('live')       // 'live' | 'mock'
   const [mockState, setMockState] = useState('stopped')  // 'stopped' | 'running'
+  const [koreaBoundList, setKoreaBoundList] = useState([])
 
   const mapRef = useRef(null)
   const mapInstanceRef = useRef(null)
@@ -348,6 +382,7 @@ export default function App() {
     map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
     map.getSource('fire-source')?.setData(toGeoJSONFires(filteredFires))
     setCounts({ aircraft: filtered.length, fires: filteredFires.length })
+    setKoreaBoundList(filtered.filter(isKoreaBound))
   }, [])
 
   const clearMapData = useCallback(() => {
@@ -398,6 +433,7 @@ export default function App() {
       Promise.all([
         loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80'),
         loadIcon('aircraft-military', makeMilitarySVG, '#ef4444'),
+        loadIcon('aircraft-korean',   makeCivilianSVG, '#f59e0b'),
       ]).then(() => {
         // ── Aircraft ──
         map.addSource('aircraft-source', {
@@ -409,7 +445,11 @@ export default function App() {
           type: 'symbol',
           source: 'aircraft-source',
           layout: {
-            'icon-image': ['case', ['==', ['get', 'military'], 1], 'aircraft-military', 'aircraft-civilian'],
+            'icon-image': ['case',
+              ['==', ['get', 'korean'],   1], 'aircraft-korean',
+              ['==', ['get', 'military'], 1], 'aircraft-military',
+              'aircraft-civilian',
+            ],
             'icon-size': 1,
             'icon-rotate': ['get', 'heading'],
             'icon-rotation-alignment': 'map',
@@ -422,7 +462,11 @@ export default function App() {
             'text-allow-overlap': false,
           },
           paint: {
-            'text-color': ['case', ['==', ['get', 'military'], 1], '#ef4444', '#4ade80'],
+            'text-color': ['case',
+              ['==', ['get', 'korean'],   1], '#f59e0b',
+              ['==', ['get', 'military'], 1], '#ef4444',
+              '#4ade80',
+            ],
             'text-halo-color': 'rgba(0,0,0,0.85)',
             'text-halo-width': 1,
           },
@@ -471,6 +515,51 @@ export default function App() {
           },
         })
 
+        // ── Airports ──
+        map.addSource('airport-source', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+        })
+        map.addLayer({
+          id: 'airport-circle-layer',
+          type: 'circle',
+          source: 'airport-source',
+          paint: {
+            'circle-radius': ['match', ['get', 'type'],
+              'large_airport',  6,
+              'medium_airport', 4,
+              3,
+            ],
+            'circle-color': ['match', ['get', 'type'],
+              'large_airport',  '#60a5fa',
+              'medium_airport', '#94a3b8',
+              '#475569',
+            ],
+            'circle-opacity': 0.9,
+            'circle-stroke-width': 1,
+            'circle-stroke-color': 'rgba(0,0,0,0.6)',
+          },
+        })
+        map.addLayer({
+          id: 'airport-label-layer',
+          type: 'symbol',
+          source: 'airport-source',
+          minzoom: 7,
+          layout: {
+            'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
+            'text-size': 10,
+            'text-offset': [0, 1.2],
+            'text-anchor': 'top',
+            'text-optional': true,
+            'text-allow-overlap': false,
+          },
+          paint: {
+            'text-color': '#94a3b8',
+            'text-halo-color': 'rgba(0,0,0,0.9)',
+            'text-halo-width': 1,
+          },
+        })
+
         // ── Popups ──
         const popup = new mapboxgl.Popup({ className: 'military-popup', closeButton: true, maxWidth: '300px' })
         popupRef.current = popup
@@ -487,8 +576,28 @@ export default function App() {
 
         bindPopup('aircraft-layer', buildAircraftPopupHTML)
         bindPopup('fire-circle-layer', buildFirePopupHTML)
+        bindPopup('airport-circle-layer', buildAirportPopupHTML)
 
         setMapLoaded(true)
+
+        // Fetch airports (static, once)
+        fetch(`${BACKEND_URL}/api/airports/me`)
+          .then(r => r.json())
+          .then(data => {
+            const geojson = {
+              type: 'FeatureCollection',
+              features: data.map(a => ({
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: a.coords },
+                properties: {
+                  id: a.id, name: a.name, iata: a.iata, icao: a.icao,
+                  type: a.type, municipality: a.municipality, elevation: a.elevation,
+                },
+              })),
+            }
+            map.getSource('airport-source')?.setData(geojson)
+          })
+          .catch(() => {})
       })
     })
 
@@ -527,6 +636,7 @@ export default function App() {
       const filtered = getFilteredAircraft(data, aircraftFilterRef.current)
       map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
       setCounts(prev => ({ ...prev, aircraft: filtered.length }))
+      setKoreaBoundList(filtered.filter(isKoreaBound))
     })
 
     socket.on('fires:update', (data) => {
@@ -611,6 +721,7 @@ export default function App() {
     const layerMap = {
       aircraft: ['aircraft-layer'],
       fires: ['fire-heat-layer', 'fire-circle-layer'],
+      airports: ['airport-circle-layer', 'airport-label-layer'],
     }
     Object.entries(layers).forEach(([key, visible]) => {
       layerMap[key]?.forEach(id => {
@@ -790,6 +901,7 @@ export default function App() {
           {[
             { key: 'aircraft', label: 'ADS-B TRACKS',  count: counts.aircraft, icon: '✈' },
             { key: 'fires',    label: 'FIRE HOTSPOTS', count: counts.fires,    icon: '🔥' },
+            { key: 'airports', label: 'AIRPORTS',      count: null,            icon: '🛬' },
           ].map(({ key, label, count, icon }) => (
             <button key={key} onClick={() => toggleLayer(key)}
               className={`flex items-center justify-between px-3 py-2 border text-xs tracking-wide transition-all
@@ -797,7 +909,7 @@ export default function App() {
                   ? 'border-green-400/40 bg-green-400/10 text-green-300'
                   : 'border-green-400/10 text-green-400/30'}`}>
               <span>{icon} {label}</span>
-              <span className="tabular-nums">{count}</span>
+              {count !== null && <span className="tabular-nums">{count}</span>}
             </button>
           ))}
 
@@ -840,6 +952,25 @@ export default function App() {
               </button>
             ))}
           </div>
+
+          {/* Korea-bound flights */}
+          {koreaBoundList.length > 0 && (
+            <div className="mt-2 border-t border-amber-400/20 pt-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-0.5 h-3 bg-amber-400/50 shrink-0" />
+                <span className="text-amber-400/60 text-xs tracking-widest">KOREA BOUND</span>
+                <span className="ml-auto text-amber-400/40 text-xs">{koreaBoundList.length}</span>
+              </div>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {koreaBoundList.map(ac => (
+                  <div key={ac.id || ac.callsign} className="px-2 py-1 bg-amber-400/5 border border-amber-400/20 text-xs">
+                    <div className="text-amber-300 font-bold tracking-wide">{ac.callsign}</div>
+                    {ac.route && <div className="text-amber-400/50 text-[10px]">{ac.route}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Intel summary */}
           <div className="mt-2 border-t border-green-400/20 pt-3 space-y-1">
