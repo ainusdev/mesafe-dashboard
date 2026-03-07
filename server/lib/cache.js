@@ -68,7 +68,7 @@ function parseCSVLine(line) {
 
 const AIRCRAFT_CACHE_HEADERS = [
   'id','callsign','lat','lon','altitude','speed','heading',
-  'military','onGround','actype','registration','originCountry','squawk','positionSource',
+  'military','militaryStatus','onGround','actype','registration','originCountry','squawk','positionSource',
 ]
 
 function saveAircraftCache(aircraft) {
@@ -79,7 +79,7 @@ function saveAircraftCache(aircraft) {
       rows.push([
         escapeCsv(ac.id), escapeCsv(ac.callsign),
         ac.lat, ac.lon, ac.altitude, ac.speed,
-        ac.heading ?? '', ac.military, ac.onGround,
+        ac.heading ?? '', ac.military, ac.militaryStatus || (ac.military ? 'military' : 'civilian'), ac.onGround,
         escapeCsv(ac.actype), escapeCsv(ac.registration),
         escapeCsv(ac.originCountry), escapeCsv(ac.squawk), escapeCsv(ac.positionSource),
       ].join(','))
@@ -100,16 +100,23 @@ function loadAircraftCache() {
     if (lines.length < 2) return []
     return lines.slice(1).map(line => {
       const v = parseCSVLine(line)
-      if (v.length < 14) return null
+      // Support both old (14-col) and new (15-col with militaryStatus) format
+      const hasStatus = v.length >= 15
       const heading = v[6] !== '' ? parseFloat(v[6]) : null
+      const military = v[7] === 'true'
+      const militaryStatus = hasStatus
+        ? (v[8] || (military ? 'military' : 'civilian'))
+        : (military ? 'military' : 'civilian')
+      const col = hasStatus ? 1 : 0  // offset for columns after militaryStatus
       return {
         id: v[0], callsign: v[1],
         lat: parseFloat(v[2]), lon: parseFloat(v[3]),
         altitude: parseInt(v[4]) || 0, speed: parseInt(v[5]) || 0,
         heading: isNaN(heading) ? null : heading,
-        military: v[7] === 'true', onGround: v[8] === 'true',
-        actype: v[9], registration: v[10], originCountry: v[11],
-        squawk: v[12], positionSource: v[13],
+        military, militaryStatus,
+        onGround: v[8 + col] === 'true',
+        actype: v[9 + col], registration: v[10 + col], originCountry: v[11 + col],
+        squawk: v[12 + col], positionSource: v[13 + col],
       }
     }).filter(r => r && !isNaN(r.lat) && !isNaN(r.lon))
   } catch (err) {

@@ -133,6 +133,7 @@ function parseAirplanesLive(ac) {
   const altFt    = typeof ac.alt_baro === 'number' ? ac.alt_baro : null
   const onGround = ac.on_ground || ac.alt_baro === 'ground' || altFt === 0
 
+  const militaryStatus = classifyMilitary(icao24, callsign)
   return {
     id:             icao24,
     callsign:       callsign || icao24.toUpperCase(),
@@ -141,7 +142,8 @@ function parseAirplanesLive(ac) {
     altitude:       altFt != null ? Math.round(altFt) : 0,
     speed:          typeof ac.gs === 'number' ? Math.round(ac.gs) : 0,
     heading:        ac.track != null ? ac.track : null,
-    military:       isMilitaryAircraft(icao24, callsign),
+    military:       militaryStatus === 'military',
+    militaryStatus,
     onGround:       !!onGround,
     actype:         ac.t || 'UNKNOWN',
     registration:   ac.r || '',
@@ -204,29 +206,61 @@ async function getAuthHeaders() {
   }
 }
 
-// ─── Military detection ───────────────────────────────────────────────────────
-const MILITARY_CALLSIGN_PREFIXES = [
-  'RCH', 'REACH', 'JAKE', 'PACK', 'DARK', 'SPAR', 'DOOM', 'HAVOC',
-  'TOPCAT', 'DISCO', 'GHOST', 'WOLF', 'COBRA', 'EAGLE', 'VIPER',
-  'RAVEN', 'MAGMA', 'BONE', 'BUFF', 'STEEL', 'BUCK', 'SWORD',
-  'SULTAN', 'TORCH', 'ATLAS', 'FORCE', 'KNIGHT', 'DUKE',
+// ─── Military classification ──────────────────────────────────────────────────
+// Returns: 'military' | 'suspected' | 'civilian'
+
+// Confirmed military callsign prefixes (well-documented USAF/NATO/Middle East)
+const CONFIRMED_MILITARY_CALLSIGNS = [
+  'RCH', 'REACH',  // USAF Air Mobility Command (KC-135, C-17)
+  'JAKE',           // USAF
+  'PACK',           // USAF
+  'DARK',           // USAF special ops
+  'SPAR',           // USAF VIP transport (C-37A)
+  'DOOM',           // USAF
+  'HAVOC',          // US military
+  'TOPCAT',         // US military
+  'DISCO',          // E-8C JSTARS surveillance
+  'RAVEN',          // USAF special ops
+  'MAGMA',          // USAF
+  'BONE',           // B-1B Lancer
+  'BUFF',           // B-52 Stratofortress
+  'SWORD',          // USAF
+  'TORCH',          // USAF special ops
+  'KNIGHT',         // USAF
+  'DUKE',           // USAF
+  'VIPER',          // F-16 Fighting Falcon
 ]
 
-const MILITARY_HEX_RANGES = [
-  { min: 0xAE0000, max: 0xAEFFFF }, // US Air Force
-  { min: 0xA00000, max: 0xA3FFFF }, // US DoD (general)
-  { min: 0x43C000, max: 0x43CFFF }, // UK Military
-  { min: 0x3A8000, max: 0x3AFFFF }, // French military
-  { min: 0x710000, max: 0x71FFFF }, // Israeli Air Force (IAF)
-  { min: 0x730000, max: 0x73FFFF }, // Saudi military (RSAF)
+// Ambiguous — could be military or civilian; shown as 미식별 (unidentified)
+const SUSPECTED_MILITARY_CALLSIGNS = [
+  'GHOST',  // too generic
+  'WOLF',   // too generic
+  'COBRA',  // used by civilian helicopter tours
+  'EAGLE',  // Eagle Aviation civilian ops
+  'SULTAN', // royal/state (not necessarily combat military)
+  'ATLAS',  // Atlas Air civilian cargo
+  'FORCE',  // too generic
+  'STEEL',  // too generic
+  'BUCK',   // too generic
 ]
 
-function isMilitaryAircraft(icao24, callsign) {
+// Confirmed military ICAO 24-bit hex allocations
+const CONFIRMED_MILITARY_HEX_RANGES = [
+  { min: 0xAE0000, max: 0xAEFFFF, note: 'US Air Force' },
+  { min: 0x43C000, max: 0x43CFFF, note: 'UK Military (RAF)' },
+  { min: 0x3A8000, max: 0x3AFFFF, note: 'French Air Force' },
+  { min: 0x710000, max: 0x71FFFF, note: 'Israeli Air Force (IAF)' },
+  { min: 0x730000, max: 0x73FFFF, note: 'Saudi military (RSAF)' },
+]
+
+/** Returns 'military' | 'suspected' | 'civilian' */
+function classifyMilitary(icao24, callsign) {
   const cs = (callsign || '').trim().toUpperCase()
-  if (MILITARY_CALLSIGN_PREFIXES.some(p => cs.startsWith(p))) return true
+  if (CONFIRMED_MILITARY_CALLSIGNS.some(p => cs.startsWith(p))) return 'military'
   const hex = parseInt(icao24 || '', 16)
-  if (!isNaN(hex) && MILITARY_HEX_RANGES.some(r => hex >= r.min && hex <= r.max)) return true
-  return false
+  if (!isNaN(hex) && CONFIRMED_MILITARY_HEX_RANGES.some(r => hex >= r.min && hex <= r.max)) return 'military'
+  if (SUSPECTED_MILITARY_CALLSIGNS.some(p => cs.startsWith(p))) return 'suspected'
+  return 'civilian'
 }
 
 // ─── OpenSky state vector parser ──────────────────────────────────────────────
@@ -241,6 +275,7 @@ function parseStateVector(sv) {
   const baroM    = sv[7]
   const velMs    = sv[9]
 
+  const militaryStatus = classifyMilitary(icao24, callsign)
   return {
     id:             icao24,
     callsign:       callsign || icao24.toUpperCase(),
@@ -249,7 +284,8 @@ function parseStateVector(sv) {
     altitude:       baroM != null ? Math.round(baroM * METRES_TO_FEET) : 0,
     speed:          velMs != null ? Math.round(velMs * M_S_TO_KNOTS) : 0,
     heading:        sv[10] != null ? sv[10] : null,
-    military:       isMilitaryAircraft(icao24, callsign),
+    military:       militaryStatus === 'military',
+    militaryStatus,
     onGround:       !!sv[8],
     actype:         'UNKNOWN',
     registration:   '',

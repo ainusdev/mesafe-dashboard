@@ -7,8 +7,9 @@ export function normaliseAircraft(ac) {
 
 export function getFilteredAircraft(data, filter) {
   const norm = data.map(normaliseAircraft)
-  if (filter === 'MILITARY') return norm.filter(a => a.military)
-  if (filter === 'CIVILIAN') return norm.filter(a => !a.military)
+  if (filter === 'MILITARY') return norm.filter(a => a.militaryStatus === 'military')
+  if (filter === 'UNKNOWN')  return norm.filter(a => a.militaryStatus === 'suspected')
+  if (filter === 'CIVILIAN') return norm.filter(a => !a.military && a.militaryStatus !== 'suspected')
   return norm
 }
 
@@ -41,6 +42,7 @@ export function toGeoJSONAircraft(data) {
         speed:         ac.speed || 0,
         actype:        ac.actype || 'UNKNOWN',
         military:      ac.military ? 1 : 0,
+        militaryStatus: ac.militaryStatus || (ac.military ? 'military' : 'civilian'),
         registration:  ac.registration || '',
         originCountry: ac.originCountry || ac.origin_country || '',
         countryCode:   COUNTRY_CODE[ac.originCountry || ac.origin_country || ''] || '',

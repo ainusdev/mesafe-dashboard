@@ -10,6 +10,17 @@ export function makeCivilianSVG(color) {
   )}`
 }
 
+export function makeUnknownSVG(color) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+      <polygon points="16,1 18,30 16,26 14,30" fill="${color}"/>
+      <polygon points="16,9 30,28 16,22 2,28" fill="${color}" opacity="0.88"/>
+      <polygon points="16,10 23,16 16,13 9,16" fill="${color}" opacity="0.65"/>
+      <circle cx="16" cy="6" r="3" fill="${color}" opacity="0.6"/>
+    </svg>`,
+  )}`
+}
+
 export function makeMilitarySVG(color) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">

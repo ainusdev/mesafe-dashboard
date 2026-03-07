@@ -1,7 +1,7 @@
 export function buildAircraftPopupHTML(props) {
-  const isMil   = props.military === 1 || props.military === true
-  const acColor = isMil ? '#ef4444' : '#4ade80'
-  const acLabel = isMil ? '🔴 MILITARY' : '🟢 CIVILIAN'
+  const status  = props.militaryStatus || (props.military ? 'military' : 'civilian')
+  const acColor = status === 'military' ? '#ef4444' : status === 'suspected' ? '#f59e0b' : '#4ade80'
+  const acLabel = status === 'military' ? '🔴 MILITARY' : status === 'suspected' ? '🟡 미식별' : '🟢 CIVILIAN'
   const altFt   = typeof props.altitude === 'number' ? props.altitude.toLocaleString() : props.altitude
   const spd     = typeof props.speed === 'number' ? `${Math.round(props.speed)} kts` : '—'
 

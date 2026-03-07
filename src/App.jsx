@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 import { MAPBOX_TOKEN, BACKEND_URL, REGIONS, REGION_TZ, REGION_CODE } from './constants.js'
 import { formatTZ } from './utils.js'
 import { preloadAllFlags, ensureAircraftLabels } from './flags.js'
-import { makeCivilianSVG, makeMilitarySVG } from './icons.js'
+import { makeCivilianSVG, makeMilitarySVG, makeUnknownSVG } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
 import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires } from './data.js'
 import { buildAircraftPopupHTML, buildFirePopupHTML, buildAirportPopupHTML } from './popups.js'
@@ -136,6 +136,7 @@ export default function App() {
       Promise.all([
         loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80'),
         loadIcon('aircraft-military', makeMilitarySVG, '#ef4444'),
+        loadIcon('aircraft-unknown',  makeUnknownSVG,  '#f59e0b'),
       ]).then(() => {
         // ── Aircraft ──
         map.addSource('aircraft-source', {
@@ -147,8 +148,9 @@ export default function App() {
           type: 'symbol',
           source: 'aircraft-source',
           layout: {
-            'icon-image': ['case',
-              ['==', ['get', 'military'], 1], 'aircraft-military',
+            'icon-image': ['match', ['get', 'militaryStatus'],
+              'military',  'aircraft-military',
+              'suspected', 'aircraft-unknown',
               'aircraft-civilian',
             ],
             'icon-size': 1,
@@ -164,7 +166,11 @@ export default function App() {
             'text-optional': true,
           },
           paint: {
-            'text-color': ['case', ['==', ['get', 'military'], 1], '#ef4444', '#4ade80'],
+            'text-color': ['match', ['get', 'militaryStatus'],
+              'military',  '#ef4444',
+              'suspected', '#f59e0b',
+              '#4ade80',
+            ],
             'text-halo-color': 'rgba(0,0,0,0.85)',
             'text-halo-width': 1,
           },
@@ -834,17 +840,24 @@ export default function App() {
               <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
               <span className="text-green-400/50 text-xs tracking-widest">AIRCRAFT FILTER</span>
             </div>
-            {['ALL', 'MILITARY', 'CIVILIAN'].map(f => (
+            {[
+              { f: 'ALL',      icon: '⚪', label: 'ALL' },
+              { f: 'MILITARY', icon: '🔴', label: 'MILITARY' },
+              { f: 'UNKNOWN',  icon: '🟡', label: '미식별' },
+              { f: 'CIVILIAN', icon: '🟢', label: 'CIVILIAN' },
+            ].map(({ f, icon, label }) => (
               <button key={f} onClick={() => setAircraftFilter(f)}
                 className={`w-full text-left px-3 py-2 md:py-1.5 text-xs border mb-1 transition-all
                   ${aircraftFilter === f
                     ? f === 'MILITARY'
                       ? 'border-red-400/50 bg-red-400/10 text-red-400'
-                      : f === 'CIVILIAN'
-                        ? 'border-green-400/50 bg-green-400/10 text-green-400'
-                        : 'border-green-400/40 bg-green-400/10 text-green-300'
+                      : f === 'UNKNOWN'
+                        ? 'border-amber-400/50 bg-amber-400/10 text-amber-400'
+                        : f === 'CIVILIAN'
+                          ? 'border-green-400/50 bg-green-400/10 text-green-400'
+                          : 'border-green-400/40 bg-green-400/10 text-green-300'
                     : 'border-green-400/10 text-green-400/30'}`}>
-                {f === 'MILITARY' ? '🔴' : f === 'CIVILIAN' ? '🟢' : '⚪'} {f}
+                {icon} {label}
               </button>
             ))}
           </div>

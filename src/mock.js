@@ -20,9 +20,12 @@ export const CALLSIGNS_CIVILIAN = [
 ]
 
 export const CALLSIGNS_MILITARY = [
-  'EAGLE-1','EAGLE-2','VIPER-1','VIPER-3','HAWK-7','HAWK-9',
-  'COBRA-2','COBRA-4','FALCON-5','GHOST-3','RAVEN-2','WOLF-1',
+  'EAGLE-1','EAGLE-2','VIPER-1','VIPER-3',
   'REACH-1','SPAR-21','DOOM-4','DUKE-7',
+]
+
+export const CALLSIGNS_SUSPECTED = [
+  'GHOST-3','WOLF-1','COBRA-2','COBRA-4',
 ]
 
 // ─── Fixed mock fleet ─────────────────────────────────────────────────────────
@@ -31,18 +34,26 @@ let mockFleet = null
 
 function buildMockFleet() {
   return Array.from({ length: 30 }, (_, i) => {
-    const isMilitary = i < 6
+    const isMilitary  = i < 4
+    const isSuspected = i >= 4 && i < 8
+    const militaryStatus = isMilitary ? 'military' : isSuspected ? 'suspected' : 'civilian'
 
     let callsign, actype, originCountry, speedKts, altFt
 
     if (isMilitary) {
       callsign      = CALLSIGNS_MILITARY[i % CALLSIGNS_MILITARY.length]
-      actype        = ['F-16','F-15','C-130','KC-135','MQ-9','UH-60'][i % 6]
-      originCountry = ['United States','United Kingdom','Israel','France','Germany','United States'][i % 6]
+      actype        = ['F-16','F-15','C-130','KC-135'][i % 4]
+      originCountry = ['United States','United Kingdom','Israel','France'][i % 4]
       speedKts      = randInt(300, 600)
       altFt         = randInt(1000, 35000)
+    } else if (isSuspected) {
+      callsign      = CALLSIGNS_SUSPECTED[(i - 4) % CALLSIGNS_SUSPECTED.length]
+      actype        = ['MQ-9','UH-60','C-17','P-8'][( i - 4) % 4]
+      originCountry = ['United States','United Kingdom','Israel','France'][(i - 4) % 4]
+      speedKts      = randInt(200, 500)
+      altFt         = randInt(1000, 40000)
     } else {
-      const ci = i - 6
+      const ci = i - 8
       callsign      = CALLSIGNS_CIVILIAN[ci % CALLSIGNS_CIVILIAN.length]
       actype        = ['B77W','A320','A330','B737','A321','B787','A380'][ci % 7]
       originCountry = ['Turkey','United Arab Emirates','Saudi Arabia','Qatar','Egypt','Germany','United Kingdom','India','Pakistan','Iran','Jordan','Greece','Russia','South Korea','France'][ci % 15]
@@ -67,7 +78,8 @@ function buildMockFleet() {
       targetHeading:   Math.round(rand(0, 360)),
       headingChange:   rand(5, 25),
       actype,
-      military:        isMilitary,
+      military:        isMilitary || isSuspected,
+      militaryStatus,
       registration:    '',
       originCountry,
       coords:          [0, 0],
