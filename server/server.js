@@ -171,6 +171,57 @@ async function fetchAirports() {
   }
 }
 
+// ─── adsb.lol — ADS-B Exchange mirror, no API key required ───────────────────
+// Docs: https://api.adsb.lol/docs
+// Middle East center: lat 32, lon 44.5 — 1500nm radius covers entire region
+
+const ADSBLOL_URL = 'https://api.adsb.lol/v2/lat/32/lon/44.5/dist/1500'
+
+// Middle East bounding box filter (same as OpenSky)
+const ME_BBOX = { latMin: 22, latMax: 42, lonMin: 29, lonMax: 60 }
+
+function parseADSBLol(ac) {
+  const lon = ac.lon
+  const lat = ac.lat
+  if (lon == null || lat == null) return null
+  if (lat < ME_BBOX.latMin || lat > ME_BBOX.latMax) return null
+  if (lon < ME_BBOX.lonMin || lon > ME_BBOX.lonMax) return null
+
+  const icao24   = (ac.hex || '').trim().toLowerCase()
+  const callsign = (ac.flight || '').trim()
+  const altFt    = typeof ac.alt_baro === 'number' ? ac.alt_baro : null
+  const onGround = ac.on_ground || ac.alt_baro === 'ground' || altFt === 0
+
+  return {
+    id:             icao24,
+    callsign:       callsign || icao24.toUpperCase(),
+    lat,
+    lon,
+    altitude:       altFt != null ? Math.round(altFt) : 0,
+    speed:          typeof ac.gs === 'number' ? Math.round(ac.gs) : 0,
+    heading:        ac.track || 0,
+    military:       isMilitaryAircraft(icao24, callsign),
+    onGround:       !!onGround,
+    actype:         ac.t || 'UNKNOWN',
+    registration:   ac.r || '',
+    origin:         null,
+    destination:    null,
+    route:          null,
+    originCountry:  ac.ownOp || '',
+    squawk:         ac.squawk || '',
+    positionSource: 'ADS-B',
+  }
+}
+
+async function fetchADSBLol() {
+  const res = await axios.get(ADSBLOL_URL, { timeout: 20000 })
+  if (!res.data?.ac?.length) throw new Error('No aircraft in response')
+  return res.data.ac
+    .map(parseADSBLol)
+    .filter(Boolean)
+    .filter(ac => !ac.onGround)
+}
+
 // ─── OpenSky Network REST API ─────────────────────────────────────────────────
 // GET /states/all with Middle East bounding box (free, no API key required)
 // Docs: https://openskynetwork.github.io/opensky-api/rest.html
@@ -585,7 +636,22 @@ async function fetchAircraft() {
     if (err.response?.status === 429) {
       log('OpenSky', 'Rate limited (429) — will retry next interval', 'warn')
     } else {
-      log('OpenSky', `Fetch error: ${err.message}`, 'error')
+      log('OpenSky', `Fetch error: ${err.message} — trying adsb.lol fallback`, 'warn')
+    }
+    // ── adsb.lol fallback ──────────────────────────────────────────────────────
+    try {
+      const parsed = await fetchADSBLol()
+      aircraftData = parsed.map(ac => {
+        const cached = getCachedRoute(ac.id)
+        return cached ? { ...ac, ...cached } : ac
+      })
+      const milCount = aircraftData.filter(a => a.military).length
+      io.emit('aircraft:update', aircraftData)
+      log('OpenSky', `[adsb.lol] ${aircraftData.length} aircraft  (${milCount} mil)`)
+      enrichRoutesInBackground(aircraftData).catch(() => {})
+      return
+    } catch (lolErr) {
+      log('OpenSky', `adsb.lol also failed: ${lolErr.message}`, 'error')
     }
   }
 }
