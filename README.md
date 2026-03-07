@@ -1,84 +1,139 @@
-⏺ 구동 방법
+# MESAFE — Middle East Safety Dashboard
 
-사전 준비 — Python 패키지 설치 (최초 1회)
+Real-time conflict monitoring dashboard for the Middle East.
+Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS), and simulation mode.
 
-pip3 install requests pandas python-dotenv
-                                                                                                                                                                     
+**Live:** https://conflict-safety-dashboard.web.app
+
 ---
-터미널 1 — 백엔드 서버 시작
 
-cd /Users/linrise/IdeaProjects/dashboard/server
-node server.js
+## Stack
 
-정상 시작 시 출력:
-╔══════════════════════════════════════════╗
-║  SENTINEL // CONFLICT MONITOR — BACKEND  ║
-║  http://localhost:3001                   ║
-╚══════════════════════════════════════════╝
-[OpenSky] 143 aircraft  (12 military, 131 civilian)
-[FIRMS] 38 fire hotspots
+| Layer | Tech |
+|-------|------|
+| Frontend | Vite + React 19, Mapbox GL JS v3, Tailwind CSS v3 |
+| Backend | Node.js + Express + Socket.io |
+| Database | Firebase Firestore |
+| Hosting | Firebase Hosting (frontend), Koyeb (backend) |
 
-  ---
-터미널 2 — 프론트엔드 시작
+---
 
-cd /Users/linrise/IdeaProjects/dashboard
+## Local Development
+
+### Prerequisites
+
+```bash
+# Frontend
+npm install
+
+# Backend
+cd server && npm install
+```
+
+### Environment Variables
+
+**`.env`** (project root)
+```env
+VITE_MAPBOX_TOKEN=...
+VITE_BACKEND_DEV_URL=http://localhost:3001
+VITE_BACKEND_RELEASE_URL=https://your-koyeb-app.koyeb.app
+```
+
+**`server/.env`**
+```env
+OPENSKY_CLIENT_ID=...
+OPENSKY_CLIENT_SECRET=...
+NASA_FIRMS_MAP_KEY=...
+FIREBASE_SERVICE_ACCOUNT=./serviceAccount.json
+PORT=3001
+```
+
+`server/serviceAccount.json` — Firebase 서비스 계정 키 (Firebase Console → 프로젝트 설정 → 서비스 계정)
+
+### Run
+
+```bash
+# Terminal 1 — Backend
+cd server && node server.js
+
+# Terminal 2 — Frontend
 npm run dev
+# http://localhost:5173
+```
 
-브라우저에서 열기: http://localhost:5173
+### Health Check
 
-  ---
-터미널 3 (선택) — Python 데이터 확인
+```
+http://localhost:3001/api/health
+```
 
-cd /Users/linrise/IdeaProjects/dashboard/server
+---
 
-# 현재 데이터 1회 출력
-python3 fetch_opensky.py
+## Data Sources
 
-# 군용기만 필터
-python3 fetch_opensky.py --military-only
+| Source | Interval | Notes |
+|--------|----------|-------|
+| OpenSky Network (ADS-B) | 22s | 4,000 req/day limit |
+| NASA FIRMS VIIRS 375m | 10s | 5,000 req/10min limit |
 
-# 30초마다 반복 갱신
-python3 fetch_opensky.py --loop 30
+---
 
-# CSV 저장
-python3 fetch_opensky.py --csv flights.csv
+## Features
 
-  ---
-전체 구동 확인 체크리스트
+### Live Mode (default)
+- Real-time aircraft positions via ADS-B
+- Fire hotspots from NASA satellite data, saved to Firestore
+- Connection status indicator (LIVE / CONNECTING)
 
-┌──────────────┬─────────────────────────────────────────────────────────────────────┐
-│     항목     │                              확인 방법                              │
-├──────────────┼─────────────────────────────────────────────────────────────────────┤
-│ 백엔드 정상  │ 브라우저에서 http://localhost:3001/api/health 접속 → JSON 응답 확인 │
-├──────────────┼─────────────────────────────────────────────────────────────────────┤
-│ OpenSky 연결 │ 터미널 1에서 [OpenSky] N aircraft 로그 확인                         │
-├──────────────┼─────────────────────────────────────────────────────────────────────┤
-│ FIRMS 연결   │ 터미널 1에서 [FIRMS] N fire hotspots 로그 확인                      │
-├──────────────┼─────────────────────────────────────────────────────────────────────┤
-│ 프론트 연결  │ 대시보드 좌측 상단 뱃지가 MOCK → LIVE 로 바뀌면 성공                │
-└──────────────┴─────────────────────────────────────────────────────────────────────┘
+### Mock Mode
+- **START** — generate simulation data for selected region
+- **STOP** — pause simulation, data remains on map
+- **CLR** — clear all simulation data
+- Region change during simulation immediately reseeds data
+- Mock data is NOT saved to Firestore
 
-  ---
-업데이트 주기
+### Fire Time Window Filter
+Filter hotspots by acquisition time: **1H / 6H / 12H / 24H**
 
-┌──────────────────────────┬────────┐
-│          데이터          │  주기  │
-├──────────────────────────┼────────┤
-│ 항공기 위치 (OpenSky)    │ 15초   │
-├──────────────────────────┼────────┤
-│ 화재 위성 데이터 (FIRMS) │ 5분    │
-├──────────────────────────┼────────┤
-│ OSINT 이벤트 (Telegram)  │ 실시간 │
-└──────────────────────────┴────────┘
+### Aircraft Filter
+Filter by type: **ALL / MILITARY / CIVILIAN**
 
-  ---
-Telegram OSINT 처음 로그인할 때
+---
 
-# 서버 최초 실행 시 — 아래 프롬프트가 순서대로 나타남
-📱 Telegram phone number (with country code): +821012345678
-📨 OTP code from Telegram: 12345
+## Deployment
 
-# 로그인 성공 후 세션 문자열이 출력됨 → server/.env 에 저장
-TELEGRAM_SESSION=1BQANOTEu...
+```bash
+# Frontend → Firebase Hosting
+npm run build && firebase deploy --only hosting
 
-세션을 .env에 저장하면 다음 실행부터는 로그인 없이 자동 연결됩니다.# mesafe-dashboard
+# Backend → Koyeb (auto-deploy on push)
+git push origin main
+```
+
+---
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/health` | Server status + data counts |
+| `GET /api/aircraft` | Current aircraft data |
+| `GET /api/fires` | Current fire hotspot data |
+
+---
+
+## Firestore Schema
+
+Collection: `fire_hotspots`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Doc ID: `fire-{date}-{time}-{lat}-{lon}` |
+| `coords` | array | `[lon, lat]` |
+| `acqTimestamp` | number | UTC milliseconds |
+| `acqDate` | string | `YYYY-MM-DD` |
+| `acqTime` | string | `HHMM` UTC |
+| `brightness` | number | Normalized 0–1 |
+| `frp` | number | Fire Radiative Power (MW) |
+| `intensity` | string | LOW / MEDIUM / HIGH / EXTREME |
+| `confidence` | string | h / m / l / nominal |
