@@ -236,7 +236,7 @@ async function fetchAirports() {
 // Docs: https://api.adsb.lol/docs
 // Middle East center: lat 32, lon 44.5 — 1500nm radius covers entire region
 
-const ADSBLOL_URL = 'https://api.adsb.lol/v2/lat/32/lon/44.5/dist/1500'
+const ADSBLOL_URL = 'https://api.airplanes.live/v2/point/32/44.5/1500'
 
 // ICAO Doc 7910 registration prefix → country name (longest prefix matched first)
 const REG_PREFIX_COUNTRY = {
