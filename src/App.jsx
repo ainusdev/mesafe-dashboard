@@ -596,7 +596,10 @@ function buildAirportPopupHTML(props) {
 
 export default function App() {
   const [activeRegion, setActiveRegion] = useState(() => {
+    // Preserve only region selection; clear everything else on load
     const saved = localStorage.getItem('mesafe_region')
+    const keepKeys = new Set(['mesafe_region'])
+    Object.keys(localStorage).forEach(k => { if (!keepKeys.has(k)) localStorage.removeItem(k) })
     return (saved && REGIONS[saved]) ? saved : 'IRAN'
   })
   const [layers, setLayers] = useState({ aircraft: true, fires: true, airports: true, airportsOther: false })

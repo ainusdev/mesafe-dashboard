@@ -56,15 +56,57 @@ app.use(express.json())
 const PORT = process.env.PORT || 3001
 const CACHE_DIR = path.join(__dirname, 'cache')
 
+function ensureCacheDir() { if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true }) }
+
+/** Returns path to the latest cache file matching prefix, or null if none exists. */
+function latestCacheFile(prefix) {
+  if (!fs.existsSync(CACHE_DIR)) return null
+  const files = fs.readdirSync(CACHE_DIR)
+    .filter(f => f.startsWith(prefix + '_') && f.endsWith('.csv'))
+    .sort()
+  return files.length ? path.join(CACHE_DIR, files[files.length - 1]) : null
+}
+
+/** Returns a new timestamped cache path for the given prefix. */
+function timestampedCachePath(prefix) {
+  ensureCacheDir()
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  return path.join(CACHE_DIR, `${prefix}_${ts}.csv`)
+}
+
+/** Keep only the latest aircraft CSV; delete all others. */
+function pruneAircraftCache() {
+  if (!fs.existsSync(CACHE_DIR)) return
+  const files = fs.readdirSync(CACHE_DIR)
+    .filter(f => f.startsWith('aircraft_') && f.endsWith('.csv'))
+    .sort()
+  files.slice(0, -1).forEach(f => {
+    try { fs.unlinkSync(path.join(CACHE_DIR, f)) } catch {}
+  })
+}
+
+/** Delete fires CSVs whose filename timestamp is older than 24 hours. */
+function pruneFiresCache() {
+  if (!fs.existsSync(CACHE_DIR)) return
+  const cutoff = Date.now() - 24 * 3600 * 1000
+  fs.readdirSync(CACHE_DIR)
+    .filter(f => f.startsWith('fires_') && f.endsWith('.csv'))
+    .forEach(f => {
+      // filename: fires_2024-01-01T12-00-00.csv → parse back to ISO
+      const iso = f.slice('fires_'.length, -4).replace(/T(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3')
+      const ts = new Date(iso).getTime()
+      if (!isNaN(ts) && ts < cutoff) {
+        try { fs.unlinkSync(path.join(CACHE_DIR, f)) } catch {}
+      }
+    })
+}
+
 // ─── In-memory state ─────────────────────────────────────────────────────────
 
 let aircraftData = loadAircraftCache()
 let fireData     = loadFiresCache()
 let airportData  = loadAirportsCache()
 let db = null
-
-// Sockets waiting for first aircraft+fire data (no CSV on first run)
-const pendingDataSockets = new Map() // id → socket
 
 // ─── Firestore ────────────────────────────────────────────────────────────────
 
@@ -591,15 +633,11 @@ function escapeCsv(v) {
     ? `"${s.replace(/"/g, '""')}"` : s
 }
 
-function ensureCacheDir() {
-  if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true })
-}
-
 const AIRCRAFT_CACHE_HEADERS = ['id','callsign','lat','lon','altitude','speed','heading','military','onGround','actype','registration','originCountry','squawk','positionSource']
 
 function saveAircraftCache(aircraft) {
   try {
-    ensureCacheDir()
+    const file = timestampedCachePath('aircraft')
     const rows = [AIRCRAFT_CACHE_HEADERS.join(',')]
     for (const ac of aircraft) {
       rows.push([
@@ -610,7 +648,8 @@ function saveAircraftCache(aircraft) {
         escapeCsv(ac.originCountry), escapeCsv(ac.squawk), escapeCsv(ac.positionSource),
       ].join(','))
     }
-    fs.writeFileSync(path.join(CACHE_DIR, 'aircraft.csv'), rows.join('\n'), 'utf8')
+    fs.writeFileSync(file, rows.join('\n'), 'utf8')
+    pruneAircraftCache()
     log('OpenSky', `Cache saved — ${aircraft.length} aircraft`)
   } catch (err) {
     log('OpenSky', `Cache save error: ${err.message}`, 'error')
@@ -619,8 +658,8 @@ function saveAircraftCache(aircraft) {
 
 function loadAircraftCache() {
   try {
-    const file = path.join(CACHE_DIR, 'aircraft.csv')
-    if (!fs.existsSync(file)) return []
+    const file = latestCacheFile('aircraft')
+    if (!file) return []
     const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
     if (lines.length < 2) return []
     return lines.slice(1).map(line => {
@@ -645,12 +684,13 @@ function loadAircraftCache() {
 
 function saveFiresCache(fires) {
   try {
-    ensureCacheDir()
+    const file = timestampedCachePath('fires')
     const rows = [FIRMS_CSV_HEADERS.join(',')]
     for (const f of fires) {
       rows.push([f.id, f.coords[0], f.coords[1], f.brightness, f.frp, f.confidence, f.acqDate, f.acqTime, f.acqTimestamp, f.intensity].join(','))
     }
-    fs.writeFileSync(path.join(CACHE_DIR, 'fires.csv'), rows.join('\n'), 'utf8')
+    fs.writeFileSync(file, rows.join('\n'), 'utf8')
+    pruneFiresCache()
     log('FIRMS', `Cache saved — ${fires.length} hotspots`)
   } catch (err) {
     log('FIRMS', `Cache save error: ${err.message}`, 'error')
@@ -659,8 +699,8 @@ function saveFiresCache(fires) {
 
 function loadFiresCache() {
   try {
-    const file = path.join(CACHE_DIR, 'fires.csv')
-    if (!fs.existsSync(file)) return []
+    const file = latestCacheFile('fires')
+    if (!file) return []
     const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
     if (lines.length < 2) return []
     return lines.slice(1).map(line => {
@@ -767,7 +807,6 @@ async function fetchAircraft() {
     saveAircraftToFirestore(aircraftData).catch(err => log('Firestore', `Aircraft save error: ${err.message}`, 'error'))
     const milCount = aircraftData.filter(a => a.military).length
     io.emit('aircraft:update', aircraftData)
-    flushPendingIfReady()
     log('OpenSky', `${aircraftData.length} aircraft  (${milCount} mil)`)
   } catch (err) {
     if (err.response?.status === 429) {
@@ -783,7 +822,6 @@ async function fetchAircraft() {
       saveAircraftToFirestore(aircraftData).catch(err => log('Firestore', `Aircraft save error: ${err.message}`, 'error'))
       const milCount = aircraftData.filter(a => a.military).length
       io.emit('aircraft:update', aircraftData)
-      flushPendingIfReady()
       log('OpenSky', `[adsb.lol] ${aircraftData.length} aircraft  (${milCount} mil)`)
       return
     } catch (lolErr) {
@@ -858,26 +896,12 @@ async function fetchFIRMS() {
     fireData = process.env.SAVE_FIRMS_CSV === 'true' ? loadLatestFireCSV() : fires
     saveFiresCache(fireData)
     io.emit('fires:update', fireData)
-    flushPendingIfReady()
     log('FIRMS', `${fireData.length} fire hotspots`)
   } catch (err) {
     log('FIRMS', `Fetch error: ${err.message}`, 'error')
   }
 }
 
-
-// Flush queued sockets once both aircraft and fire data are available
-function flushPendingIfReady() {
-  if (aircraftData.length === 0 || fireData.length === 0) return
-  for (const [id, sock] of pendingDataSockets) {
-    pendingDataSockets.delete(id)
-    if (sock.connected) {
-      sock.emit('aircraft:update', aircraftData)
-      sock.emit('fires:update', fireData)
-      log('Socket', `Deferred data:init flushed → ${id}`)
-    }
-  }
-}
 
 // ─── REST API endpoints ───────────────────────────────────────────────────────
 
@@ -923,26 +947,35 @@ io.on('connection', (socket) => {
   log('Socket', `Client connected: ${socket.id}`)
 
   socket.on('data:init', async () => {
-    // ── Airports: serve from cache; fetch if cache is empty ──
+    // ── Airports: serve from cache; fetch if none ────────────────────────────
     if (airportData.length === 0) {
-      log('Airports', 'No cache — fetching on demand…')
+      log('Airports', 'No cache — fetching…')
       await fetchAirports()
     }
     socket.emit('airports:update', airportData)
 
-    // ── Aircraft + fires: serve from cache or queue until next cycle ──
-    if (aircraftData.length > 0 && fireData.length > 0) {
-      socket.emit('aircraft:update', aircraftData)
-      socket.emit('fires:update', fireData)
-      log('Socket', `data:init (cache) → ${aircraftData.length} ac, ${fireData.length} fires, ${airportData.length} ap → ${socket.id}`)
-    } else {
-      pendingDataSockets.set(socket.id, socket)
-      log('Socket', `data:init queued (no cache yet) → ${socket.id}`)
+    // ── Aircraft: read from latest CSV; fetch if none ─────────────────────────
+    let ac = loadAircraftCache()
+    if (ac.length === 0) {
+      log('OpenSky', 'No aircraft cache — fetching for data:init…')
+      await fetchAircraft()
+      ac = loadAircraftCache()
     }
+    socket.emit('aircraft:update', ac)
+
+    // ── Fires: read from latest CSV; fetch if none ────────────────────────────
+    let fires = loadFiresCache()
+    if (fires.length === 0) {
+      log('FIRMS', 'No fires cache — fetching for data:init…')
+      await fetchFIRMS()
+      fires = loadFiresCache()
+    }
+    socket.emit('fires:update', fires)
+
+    log('Socket', `data:init → ${ac.length} ac, ${fires.length} fires, ${airportData.length} ap → ${socket.id}`)
   })
 
   socket.on('disconnect', () => {
-    pendingDataSockets.delete(socket.id)
     log('Socket', `Client disconnected: ${socket.id}`)
   })
 })
@@ -958,8 +991,8 @@ server.listen(PORT, async () => {
 
   initFirestore()
 
-  // Initial data fetch — airports are on-demand (fetched on first client connect if no cache)
-  await Promise.all([fetchAircraft(), fetchFIRMS()])
+  // Initial data fetch — all three on startup
+  await Promise.all([fetchAirports(), fetchAircraft(), fetchFIRMS()])
 
   // Scheduled intervals (configurable via .env, defaults: aircraft 100s, fires 300s)
   const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 100_000
