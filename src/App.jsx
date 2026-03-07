@@ -141,29 +141,149 @@ const CALLSIGNS_MILITARY = [
 ]
 
 // Country name → ISO 3166-1 alpha-2 code.
+// Includes ICAO formal names (inferred from ICAO 24-bit address allocation).
 // Flag emoji is rendered via canvas → Mapbox image (bypasses SDF font limitation).
 const COUNTRY_CODE = {
-  'Afghanistan':'AF','Albania':'AL','Algeria':'DZ','Armenia':'AM',
-  'Australia':'AU','Austria':'AT','Azerbaijan':'AZ',
-  'Bahrain':'BH','Bangladesh':'BD','Belarus':'BY','Belgium':'BE','Brazil':'BR','Bulgaria':'BG',
-  'Canada':'CA','China':'CN','Croatia':'HR','Cyprus':'CY','Czech Republic':'CZ',
-  'Denmark':'DK','Egypt':'EG','Estonia':'EE','Ethiopia':'ET',
-  'Finland':'FI','France':'FR','Georgia':'GE','Germany':'DE','Greece':'GR',
-  'Hungary':'HU','India':'IN','Indonesia':'ID','Iran':'IR','Iraq':'IQ',
-  'Ireland':'IE','Israel':'IL','Italy':'IT','Japan':'JP','Jordan':'JO',
-  'Kazakhstan':'KZ','Kenya':'KE','Kuwait':'KW','Kyrgyzstan':'KG',
-  'Latvia':'LV','Lebanon':'LB','Libya':'LY','Lithuania':'LT','Luxembourg':'LU',
-  'Malaysia':'MY','Malta':'MT','Mexico':'MX','Moldova':'MD','Morocco':'MA',
-  'Netherlands':'NL','Norway':'NO','Oman':'OM',
-  'Pakistan':'PK','Palestine':'PS','Poland':'PL','Portugal':'PT',
-  'Qatar':'QA','Romania':'RO','Russia':'RU',
-  'Saudi Arabia':'SA','Serbia':'RS','Singapore':'SG','Slovakia':'SK',
-  'Slovenia':'SI','Somalia':'SO','South Africa':'ZA','South Korea':'KR',
-  'Spain':'ES','Sudan':'SD','Sweden':'SE','Switzerland':'CH','Syria':'SY',
-  'Taiwan':'TW','Tajikistan':'TJ','Thailand':'TH','Tunisia':'TN',
-  'Turkey':'TR','Türkiye':'TR','Turkmenistan':'TM',
-  'Ukraine':'UA','United Arab Emirates':'AE','United Kingdom':'GB','United States':'US',
-  'Uzbekistan':'UZ','Yemen':'YE',
+  // A
+  'Afghanistan':'AF',
+  'Albania':'AL',
+  'Algeria':'DZ',
+  'Angola':'AO',
+  'Argentina':'AR',
+  'Armenia':'AM',
+  'Australia':'AU',
+  'Austria':'AT',
+  'Azerbaijan':'AZ',
+  // B
+  'Bahrain':'BH',
+  'Bangladesh':'BD',
+  'Belarus':'BY',
+  'Belgium':'BE',
+  'Bolivia':'BO','Bolivia, Plurinational State of':'BO',
+  'Bosnia and Herzegovina':'BA',
+  'Brazil':'BR',
+  'Brunei Darussalam':'BN',
+  'Bulgaria':'BG',
+  // C
+  'Cambodia':'KH',
+  'Canada':'CA',
+  'Chile':'CL',
+  'China':'CN',
+  'Colombia':'CO',
+  'Croatia':'HR',
+  'Cuba':'CU',
+  'Cyprus':'CY',
+  'Czech Republic':'CZ','Czechia':'CZ',
+  // D
+  'Denmark':'DK',
+  // E
+  'Ecuador':'EC',
+  'Egypt':'EG',
+  'Estonia':'EE',
+  'Ethiopia':'ET',
+  // F
+  'Finland':'FI',
+  'France':'FR',
+  // G
+  'Georgia':'GE',
+  'Germany':'DE',
+  'Ghana':'GH',
+  'Greece':'GR',
+  // H
+  'Hungary':'HU',
+  // I
+  'India':'IN',
+  'Indonesia':'ID',
+  'Iran':'IR','Iran, Islamic Republic of':'IR',
+  'Iraq':'IQ',
+  'Ireland':'IE',
+  'Israel':'IL',
+  'Italy':'IT',
+  // J
+  'Japan':'JP',
+  'Jordan':'JO',
+  // K
+  'Kazakhstan':'KZ',
+  'Kenya':'KE',
+  'Korea, Democratic People\'s Republic of':'KP',
+  'Korea, Republic of':'KR','South Korea':'KR',
+  'Kuwait':'KW',
+  'Kyrgyzstan':'KG',
+  // L
+  'Lao People\'s Democratic Republic':'LA','Laos':'LA',
+  'Latvia':'LV',
+  'Lebanon':'LB',
+  'Libya':'LY','Libyan Arab Jamahiriya':'LY',
+  'Lithuania':'LT',
+  'Luxembourg':'LU',
+  // M
+  'Malaysia':'MY',
+  'Maldives':'MV',
+  'Malta':'MT',
+  'Mexico':'MX',
+  'Moldova':'MD','Moldova, Republic of':'MD',
+  'Mongolia':'MN',
+  'Montenegro':'ME',
+  'Morocco':'MA',
+  'Mozambique':'MZ',
+  'Myanmar':'MM',
+  // N
+  'Nepal':'NP',
+  'Netherlands':'NL',
+  'New Zealand':'NZ',
+  'Nigeria':'NG',
+  'North Macedonia':'MK',
+  'Norway':'NO',
+  // O
+  'Oman':'OM',
+  // P
+  'Pakistan':'PK',
+  'Palestine':'PS','Palestinian Authority':'PS','State of Palestine':'PS',
+  'Peru':'PE',
+  'Philippines':'PH',
+  'Poland':'PL',
+  'Portugal':'PT',
+  // Q
+  'Qatar':'QA',
+  // R
+  'Romania':'RO',
+  'Russia':'RU','Russian Federation':'RU',
+  // S
+  'Saudi Arabia':'SA',
+  'Serbia':'RS',
+  'Singapore':'SG',
+  'Slovakia':'SK',
+  'Slovenia':'SI',
+  'Somalia':'SO',
+  'South Africa':'ZA',
+  'South Korea':'KR',
+  'Spain':'ES',
+  'Sri Lanka':'LK',
+  'Sudan':'SD',
+  'Sweden':'SE',
+  'Switzerland':'CH',
+  'Syria':'SY','Syrian Arab Republic':'SY',
+  // T
+  'Taiwan':'TW','Taiwan, Province of China':'TW',
+  'Tajikistan':'TJ',
+  'Tanzania':'TZ','Tanzania, United Republic of':'TZ',
+  'Thailand':'TH',
+  'Tunisia':'TN',
+  'Turkey':'TR','Türkiye':'TR',
+  'Turkmenistan':'TM',
+  // U
+  'Ukraine':'UA',
+  'United Arab Emirates':'AE',
+  'United Kingdom':'GB',
+  'United States':'US',
+  'Uzbekistan':'UZ',
+  // V
+  'Venezuela':'VE','Venezuela, Bolivarian Republic of':'VE',
+  'Viet Nam':'VN','Vietnam':'VN',
+  // Y
+  'Yemen':'YE',
+  // Z
+  'Zimbabwe':'ZW',
 }
 
 
