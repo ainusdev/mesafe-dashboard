@@ -20,6 +20,9 @@ const server = http.createServer(app)
 
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
+  pingInterval: 25000,
+  pingTimeout:  20000,
+  transports:   ['polling', 'websocket'],
 })
 
 app.use(cors())

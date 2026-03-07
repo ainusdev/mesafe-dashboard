@@ -346,12 +346,13 @@ export default function App() {
   // ── 3. Socket.io ──────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = io(BACKEND_URL, {
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
+      upgrade: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 4000,
-      timeout: 2000,
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 10000,
+      timeout: 10000,
     })
     socketRef.current = socket
 
