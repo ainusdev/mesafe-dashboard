@@ -20,7 +20,7 @@ cd server && node --watch server.js  # Watch mode
 ### Deployment
 ```bash
 npm run build && firebase deploy --only hosting   # Deploy frontend
-git push origin main   # Triggers Render auto-deploy for backend
+git push origin main   # Push backend code (Koyeb auto-deploy)
 ```
 
 ### Health check
@@ -55,7 +55,7 @@ Express + Socket.io. Pushes data to clients via events:
 - `aircraft:update` — every 15s (OpenSky REST API)
 - `fires:update` — every 5min (NASA FIRMS CSV API)
 
-**Known limitation:** OpenSky OAuth times out from cloud provider IPs (Render, fly.io, etc.) — aircraft falls back to mock on frontend. FIRMS works fine everywhere.
+**Known limitation:** OpenSky OAuth times out from cloud provider IPs (Koyeb, fly.io, etc.) — aircraft falls back to mock on frontend. FIRMS works fine everywhere.
 
 **REST endpoints:**
 - `GET /api/health` — status + counts
@@ -79,5 +79,5 @@ PORT=3001
 
 ### Hosting
 - **Frontend:** Firebase Hosting (`firebase deploy --only hosting`)
-- **Backend:** Render.com free tier (`server/` as root, `npm install` build, `node server.js` start)
-- **Keep-alive:** UptimeRobot pings `/api/health` every 5min (Render free tier sleeps after 15min)
+- **Backend:** Koyeb (`server/` as root, `npm install` build, `node server.js` start)
+- **Keep-alive:** UptimeRobot pings `/api/health` every 5min
