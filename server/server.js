@@ -63,6 +63,9 @@ let fireData     = loadFiresCache()
 let airportData  = loadAirportsCache()
 let db = null
 
+// Sockets waiting for first aircraft+fire data (no CSV on first run)
+const pendingDataSockets = new Map() // id → socket
+
 // ─── Firestore ────────────────────────────────────────────────────────────────
 
 function initFirestore() {
@@ -113,6 +116,20 @@ async function saveFiresToFirestore(fires) {
     await batch.commit()
   }
   log('Firestore', `${fires.length} hotspots saved`)
+}
+
+/** Save aircraft states to Firestore. Doc ID = icao24 → always overwrites with latest state. */
+async function saveAircraftToFirestore(aircraft) {
+  if (!db || aircraft.length === 0) return
+  const col = db.collection('aircraft_states')
+  for (let i = 0; i < aircraft.length; i += 500) {
+    const batch = db.batch()
+    for (const ac of aircraft.slice(i, i + 500)) {
+      batch.set(col.doc(ac.id), { ...ac, updatedAt: Date.now() })
+    }
+    await batch.commit()
+  }
+  log('Firestore', `${aircraft.length} aircraft states saved`)
 }
 
 // ─── OurAirports — Middle East ───────────────────────────────────────────────
@@ -747,8 +764,10 @@ async function fetchAircraft() {
 
     aircraftData = parsed
     saveAircraftCache(aircraftData)
+    saveAircraftToFirestore(aircraftData).catch(err => log('Firestore', `Aircraft save error: ${err.message}`, 'error'))
     const milCount = aircraftData.filter(a => a.military).length
     io.emit('aircraft:update', aircraftData)
+    flushPendingIfReady()
     log('OpenSky', `${aircraftData.length} aircraft  (${milCount} mil)`)
   } catch (err) {
     if (err.response?.status === 429) {
@@ -761,8 +780,10 @@ async function fetchAircraft() {
       const parsed = await fetchADSBLol()
       aircraftData = parsed
       saveAircraftCache(aircraftData)
+      saveAircraftToFirestore(aircraftData).catch(err => log('Firestore', `Aircraft save error: ${err.message}`, 'error'))
       const milCount = aircraftData.filter(a => a.military).length
       io.emit('aircraft:update', aircraftData)
+      flushPendingIfReady()
       log('OpenSky', `[adsb.lol] ${aircraftData.length} aircraft  (${milCount} mil)`)
       return
     } catch (lolErr) {
@@ -837,12 +858,26 @@ async function fetchFIRMS() {
     fireData = process.env.SAVE_FIRMS_CSV === 'true' ? loadLatestFireCSV() : fires
     saveFiresCache(fireData)
     io.emit('fires:update', fireData)
+    flushPendingIfReady()
     log('FIRMS', `${fireData.length} fire hotspots`)
   } catch (err) {
     log('FIRMS', `Fetch error: ${err.message}`, 'error')
   }
 }
 
+
+// Flush queued sockets once both aircraft and fire data are available
+function flushPendingIfReady() {
+  if (aircraftData.length === 0 || fireData.length === 0) return
+  for (const [id, sock] of pendingDataSockets) {
+    pendingDataSockets.delete(id)
+    if (sock.connected) {
+      sock.emit('aircraft:update', aircraftData)
+      sock.emit('fires:update', fireData)
+      log('Socket', `Deferred data:init flushed → ${id}`)
+    }
+  }
+}
 
 // ─── REST API endpoints ───────────────────────────────────────────────────────
 
@@ -887,14 +922,27 @@ app.get('/api/flights', async (req, res) => {
 io.on('connection', (socket) => {
   log('Socket', `Client connected: ${socket.id}`)
 
-  socket.on('data:init', () => {
-    socket.emit('aircraft:update', aircraftData)
-    socket.emit('fires:update', fireData)
+  socket.on('data:init', async () => {
+    // ── Airports: serve from cache; fetch if cache is empty ──
+    if (airportData.length === 0) {
+      log('Airports', 'No cache — fetching on demand…')
+      await fetchAirports()
+    }
     socket.emit('airports:update', airportData)
-    log('Socket', `data:init → ${aircraftData.length} aircraft, ${fireData.length} fires, ${airportData.length} airports → ${socket.id}`)
+
+    // ── Aircraft + fires: serve from cache or queue until next cycle ──
+    if (aircraftData.length > 0 && fireData.length > 0) {
+      socket.emit('aircraft:update', aircraftData)
+      socket.emit('fires:update', fireData)
+      log('Socket', `data:init (cache) → ${aircraftData.length} ac, ${fireData.length} fires, ${airportData.length} ap → ${socket.id}`)
+    } else {
+      pendingDataSockets.set(socket.id, socket)
+      log('Socket', `data:init queued (no cache yet) → ${socket.id}`)
+    }
   })
 
   socket.on('disconnect', () => {
+    pendingDataSockets.delete(socket.id)
     log('Socket', `Client disconnected: ${socket.id}`)
   })
 })
@@ -910,17 +958,14 @@ server.listen(PORT, async () => {
 
   initFirestore()
 
-  // Initial data fetch
-  await Promise.all([fetchAircraft(), fetchFIRMS(), fetchAirports()])
+  // Initial data fetch — airports are on-demand (fetched on first client connect if no cache)
+  await Promise.all([fetchAircraft(), fetchFIRMS()])
 
-  // Scheduled intervals (configurable via .env, defaults: aircraft 22s, fires 300s)
+  // Scheduled intervals (configurable via .env, defaults: aircraft 100s, fires 300s)
   const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 100_000
   const firesInterval    = parseInt(process.env.FIRMS_INTERVAL_MS)    || 300_000
   setInterval(fetchAircraft, aircraftInterval)
   setInterval(fetchFIRMS,    firesInterval)
-  log('FIRMS', `Intervals — aircraft: ${aircraftInterval}ms  fires: ${firesInterval}ms`)
-  setInterval(async () => {            // Retry airports if initial fetch failed
-    if (airportData.length === 0) await fetchAirports()
-  }, 60_000)
+  log('Socket', `Intervals — aircraft: ${aircraftInterval}ms  fires: ${firesInterval}ms`)
 
 })
