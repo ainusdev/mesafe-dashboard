@@ -4,7 +4,38 @@ const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
 const axios = require('axios')
-const readline = require('readline')
+
+// ─── Logger ──────────────────────────────────────────────────────────────────
+
+const C = {
+  reset:  '\x1b[0m',
+  gray:   '\x1b[90m',
+  green:  '\x1b[32m',
+  yellow: '\x1b[33m',
+  cyan:   '\x1b[36m',
+  blue:   '\x1b[34m',
+  magenta:'\x1b[35m',
+  red:    '\x1b[31m',
+  orange: '\x1b[38;5;208m',
+  bold:   '\x1b[1m',
+}
+
+const TAG_COLOR = {
+  Auth:      C.yellow,
+  OpenSky:   C.cyan,
+  Routes:    C.blue,
+  FIRMS:     C.green,
+  Firestore: C.magenta,
+  Socket:    C.orange,
+}
+
+function log(tag, msg, level = 'info') {
+  const ts   = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const col  = TAG_COLOR[tag] || C.reset
+  const lvl  = level === 'warn'  ? `${C.yellow}WARN${C.reset} ` :
+               level === 'error' ? `${C.red}ERR ${C.reset} ` : ''
+  process.stdout.write(`${C.gray}${ts}${C.reset} ${col}[${tag}]${C.reset} ${lvl}${msg}\n`)
+}
 
 // ─── Express + Socket.io setup ───────────────────────────────────────────────
 
@@ -24,7 +55,59 @@ const PORT = process.env.PORT || 3001
 
 let aircraftData = []
 let fireData = []
-let osintEvents = []
+let db = null
+
+// ─── Firestore ────────────────────────────────────────────────────────────────
+
+function initFirestore() {
+  try {
+    const admin = require('firebase-admin')
+    if (!admin.apps.length) {
+      const raw = process.env.FIREBASE_SERVICE_ACCOUNT
+      let credential
+
+      if (raw) {
+        // 1) Try parsing as JSON directly
+        // 2) If that fails, treat as file path
+        try {
+          credential = admin.credential.cert(JSON.parse(raw))
+          log('Firestore', 'Using service account from env var')
+        } catch {
+          const fs = require('fs')
+          const json = JSON.parse(fs.readFileSync(raw, 'utf8'))
+          credential = admin.credential.cert(json)
+          log('Firestore', `Using service account from file: ${raw}`)
+        }
+      } else {
+        // Application Default Credentials (firebase login / GCP)
+        credential = admin.credential.applicationDefault()
+        log('Firestore', 'Using Application Default Credentials')
+      }
+
+      admin.initializeApp({ credential, projectId: 'conflict-safety-dashboard' })
+    }
+    db = admin.firestore()
+    log('Firestore', 'Connected to conflict-safety-dashboard')
+  } catch (err) {
+    log('Firestore', `Init failed — fires will not be persisted: ${err.message}`, 'warn')
+  }
+}
+
+/** Save fire hotspots to Firestore. Doc ID is deterministic → deduplicates same satellite pass. */
+async function saveFiresToFirestore(fires) {
+  if (!db || fires.length === 0) return
+  const col = db.collection('fire_hotspots')
+  // Firestore batch limit = 500
+  for (let i = 0; i < fires.length; i += 500) {
+    const batch = db.batch()
+    for (const f of fires.slice(i, i + 500)) {
+      const docId = `${f.acqDate}-${String(f.acqTime).padStart(4, '0')}-${f.coords[1].toFixed(3)}-${f.coords[0].toFixed(3)}`
+      batch.set(col.doc(docId), f)
+    }
+    await batch.commit()
+  }
+  log('Firestore', `${fires.length} hotspots saved`)
+}
 
 // ─── OpenSky Network REST API ─────────────────────────────────────────────────
 // GET /states/all with Middle East bounding box (free, no API key required)
@@ -81,10 +164,10 @@ async function getAccessToken() {
     )
     _accessToken    = res.data.access_token
     _tokenExpiresAt = Date.now() + res.data.expires_in * 1000
-    console.log(`[Auth] Token obtained — expires in ${res.data.expires_in}s`)
+    log('Auth', `Token obtained — expires in ${res.data.expires_in}s`)
     return _accessToken
   } catch (err) {
-    console.error('[Auth] Token request failed:', err.response?.data?.error_description || err.message)
+    log('Auth', `Token request failed: ${err.response?.data?.error_description || err.message}`, 'error')
     _accessToken = null
     return null
   }
@@ -243,7 +326,7 @@ async function enrichRoutesInBackground(snapshot) {
   const uncached = snapshot.filter(ac => !getCachedRoute(ac.id))
   if (uncached.length === 0) return
 
-  console.log(`[Routes] Fetching routes for ${uncached.length} new aircraft…`)
+  log('Routes', `Fetching routes for ${uncached.length} new aircraft…`)
   let enriched = 0
 
   for (let i = 0; i < uncached.length; i += ROUTE_BATCH) {
@@ -267,7 +350,7 @@ async function enrichRoutesInBackground(snapshot) {
   }
 
   if (enriched > 0) {
-    console.log(`[Routes] ${enriched} routes resolved  (cache size: ${routeCache.size})`)
+    log('Routes', `${enriched} routes resolved  (cache size: ${routeCache.size})`)
   }
 }
 
@@ -288,11 +371,11 @@ async function fetchAircraft() {
         _accessToken = null
         const retryHeaders = await getAuthHeaders()
         if (retryHeaders.Authorization) {
-          console.warn('[OpenSky] 401 — token refreshed, retrying…')
+          log('OpenSky', '401 — token refreshed, retrying…', 'warn')
           res = await axios.get(OPENSKY_URL, { params: OPENSKY_BBOX, headers: retryHeaders, timeout: 20000 })
         } else {
           // No credentials configured — fall back to anonymous
-          console.warn('[OpenSky] 401 — falling back to anonymous request')
+          log('OpenSky', '401 — falling back to anonymous request', 'warn')
           res = await axios.get(OPENSKY_URL, { params: OPENSKY_BBOX, headers: { 'User-Agent': 'SentinelDashboard/0.2' }, timeout: 20000 })
         }
       } else {
@@ -301,7 +384,7 @@ async function fetchAircraft() {
     }
 
     if (res.status === 404 || !res.data?.states) {
-      console.log('[OpenSky] No states returned')
+      log('OpenSky', 'No states returned', 'warn')
       return
     }
 
@@ -319,17 +402,17 @@ async function fetchAircraft() {
     const milCount = aircraftData.filter(a => a.military).length
     const withRoute = aircraftData.filter(a => a.route).length
     io.emit('aircraft:update', aircraftData)
-    console.log(`[OpenSky] ${aircraftData.length} aircraft  (${milCount} mil  ${withRoute} with route)`)
+    log('OpenSky', `${aircraftData.length} aircraft  (${milCount} mil  ${withRoute} with route)`)
 
     // Fetch missing routes in background — won't block next interval
     enrichRoutesInBackground(aircraftData).catch(err =>
-      console.error('[Routes] Background enrichment error:', err.message)
+      log('Routes', `Background enrichment error: ${err.message}`, 'error')
     )
   } catch (err) {
     if (err.response?.status === 429) {
-      console.warn('[OpenSky] Rate limited (429) — will retry next interval')
+      log('OpenSky', 'Rate limited (429) — will retry next interval', 'warn')
     } else {
-      console.error('[OpenSky] Fetch error:', err.message)
+      log('OpenSky', `Fetch error: ${err.message}`, 'error')
     }
   }
 }
@@ -340,7 +423,7 @@ async function fetchAircraft() {
 async function fetchFIRMS() {
   const mapKey = process.env.NASA_FIRMS_MAP_KEY
   if (!mapKey) {
-    console.warn('[FIRMS] NASA_FIRMS_MAP_KEY not set — skipping')
+    log('FIRMS', 'NASA_FIRMS_MAP_KEY not set — skipping', 'warn')
     return
   }
 
@@ -351,7 +434,7 @@ async function fetchFIRMS() {
 
     const lines = res.data.trim().split('\n')
     if (lines.length < 2) {
-      console.log('[FIRMS] No fire data returned')
+      log('FIRMS', 'No fire data returned', 'warn')
       return
     }
 
@@ -367,223 +450,42 @@ async function fetchFIRMS() {
       const brightness = parseFloat(vals[2]) // Kelvin, typically 300-500
       const frp = parseFloat(vals[12]) || 0  // Fire Radiative Power (MW)
       const confidence = vals[9] || 'n'       // h/m/l or 0-100
+      const acqDate = vals[5] || ''
+      const acqTime = vals[6] || ''
 
       if (isNaN(lat) || isNaN(lon)) continue
 
+      // Parse acquisition time to UTC timestamp
+      const t = String(acqTime).padStart(4, '0')
+      const acqTimestamp = acqDate
+        ? new Date(`${acqDate}T${t.slice(0, 2)}:${t.slice(2, 4)}:00Z`).getTime()
+        : Date.now()
+
       fires.push({
-        id: `fire-${i}-${vals[5]}`,
+        id: `fire-${acqDate}-${t}-${lat.toFixed(3)}-${lon.toFixed(3)}`,
         coords: [lon, lat],
         brightness: Math.min(1, Math.max(0, (brightness - 300) / 200)),
         frp,
         confidence,
-        acqDate: vals[5] || '',
-        acqTime: vals[6] || '',
+        acqDate,
+        acqTime,
+        acqTimestamp,
         intensity: frp > 100 ? 'EXTREME' : frp > 50 ? 'HIGH' : frp > 10 ? 'MEDIUM' : 'LOW',
       })
     }
 
     fireData = fires
     io.emit('fires:update', fireData)
-    console.log(`[FIRMS] ${fireData.length} fire hotspots`)
+    log('FIRMS', `${fireData.length} fire hotspots`)
+
+    saveFiresToFirestore(fires).catch(err =>
+      log('Firestore', `Save error: ${err.message}`, 'error')
+    )
   } catch (err) {
-    console.error('[FIRMS] Fetch error:', err.message)
+    log('FIRMS', `Fetch error: ${err.message}`, 'error')
   }
 }
 
-// ─── Location dictionary (city/region → [lon, lat]) ─────────────────────────
-
-const LOCATION_DICT = {
-  'tehran': [51.3890, 35.6892],
-  'isfahan': [51.6710, 32.6539],
-  'shiraz': [52.5310, 29.5926],
-  'tabriz': [46.3005, 38.0800],
-  'mashhad': [59.6168, 36.2972],
-  'gaza': [34.4668, 31.5017],
-  'khan younis': [34.3064, 31.3470],
-  'rafah': [34.2600, 31.2897],
-  'jabaliya': [34.4843, 31.5320],
-  'beirut': [35.4960, 33.8938],
-  'tripoli': [35.8494, 34.4367],
-  'tyre': [35.2036, 33.2705],
-  'sidon': [35.3660, 33.5570],
-  'jerusalem': [35.2137, 31.7683],
-  'tel aviv': [34.7818, 32.0853],
-  'haifa': [34.9896, 32.7940],
-  'ramallah': [35.2095, 31.9038],
-  'nablus': [35.2600, 32.2211],
-  'jenin': [35.2985, 32.4587],
-  'damascus': [36.2765, 33.5138],
-  'aleppo': [37.1612, 36.2021],
-  'deir ez-zor': [40.1410, 35.3360],
-  'raqqa': [38.9980, 35.9500],
-  'homs': [36.7200, 34.7324],
-  'idlib': [36.6340, 35.9306],
-  'baghdad': [44.3661, 33.3152],
-  'mosul': [43.1189, 36.3356],
-  'basra': [47.7804, 30.5085],
-  'kirkuk': [44.3922, 35.4681],
-  'erbil': [44.0090, 36.1901],
-  'fallujah': [43.7866, 33.3509],
-  'ramadi': [43.2964, 33.4258],
-  'sanaa': [44.2066, 15.3694],
-  'aden': [45.0356, 12.7797],
-  'hodeida': [42.9541, 14.7978],
-  'marib': [45.3220, 15.4580],
-  'taiz': [44.0209, 13.5795],
-  'riyadh': [46.6753, 24.6877],
-  'jeddah': [39.1925, 21.4858],
-  'mecca': [39.8261, 21.3891],
-  'dubai': [55.2708, 25.2048],
-  'abu dhabi': [54.3773, 24.4539],
-  'doha': [51.5310, 25.2854],
-  'kuwait': [47.9783, 29.3797],
-  'amman': [35.9283, 31.9552],
-  'cairo': [31.2357, 30.0444],
-  'sinai': [34.0, 29.5],
-  'west bank': [35.2433, 31.9466],
-  'israel': [34.8516, 31.0461],
-  'hezbollah': [35.5, 33.8],
-  'hamas': [34.4668, 31.5017],
-  'houthi': [44.2066, 15.3694],
-  'idf': [34.8516, 31.0461],
-  'iran': [53.6880, 32.4279],
-}
-
-function extractCoordinates(text) {
-  // Explicit coords: "32.5°N 44.2°E" or "32.5N 44.2E"
-  const coordRegex = /(\d+\.?\d*)\s*°?\s*[Nn],?\s*(\d+\.?\d*)\s*°?\s*[Ee]/
-  const match = text.match(coordRegex)
-  if (match) {
-    return [parseFloat(match[2]), parseFloat(match[1])]
-  }
-
-  // Location dictionary match (longest match wins)
-  const lower = text.toLowerCase()
-  let bestMatch = null
-  let bestLen = 0
-
-  for (const [place, coords] of Object.entries(LOCATION_DICT)) {
-    if (lower.includes(place) && place.length > bestLen) {
-      bestMatch = coords
-      bestLen = place.length
-    }
-  }
-
-  if (bestMatch) {
-    // Small random offset to avoid perfect overlaps
-    return [
-      bestMatch[0] + (Math.random() - 0.5) * 0.15,
-      bestMatch[1] + (Math.random() - 0.5) * 0.15,
-    ]
-  }
-
-  return null
-}
-
-function classifyEvent(text) {
-  const lower = text.toLowerCase()
-  if (/airstrike|air strike|bombing|missile strike|f-16|f-35|jet/.test(lower)) {
-    return { type: 'AIRSTRIKE', severity: 'CRITICAL' }
-  }
-  if (/explosion|blast|detonat|struck|hit/.test(lower)) {
-    return { type: 'EXPLOSION', severity: 'HIGH' }
-  }
-  if (/rocket|drone|uav|uavs|quadcopter|shaheed/.test(lower)) {
-    return { type: 'DRONE', severity: 'HIGH' }
-  }
-  if (/ground operation|infantry|forces|troops|convoy|armored|tank/.test(lower)) {
-    return { type: 'MOVEMENT', severity: 'MODERATE' }
-  }
-  if (/checkpoint|border crossing|crossing|roadblock/.test(lower)) {
-    return { type: 'CHECKPOINT', severity: 'LOW' }
-  }
-  return { type: 'INTEL', severity: 'LOW' }
-}
-
-// ─── Telegram (GramJS) OSINT listener ────────────────────────────────────────
-
-async function initTelegram() {
-  const { TelegramClient } = require('telegram')
-  const { StringSession } = require('telegram/sessions')
-  const { NewMessage } = require('telegram/events')
-
-  const apiId = parseInt(process.env.TELEGRAM_API_ID || '0')
-  const apiHash = process.env.TELEGRAM_API_HASH || ''
-
-  if (!apiId || !apiHash) {
-    console.log('[Telegram] API credentials not set — OSINT listener disabled')
-    return
-  }
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  const ask = (q) => new Promise(resolve => rl.question(q, resolve))
-
-  const session = new StringSession(process.env.TELEGRAM_SESSION || '')
-
-  const client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 5,
-    retryDelay: 1000,
-  })
-
-  try {
-    await client.start({
-      phoneNumber: async () => ask('📱 Telegram phone number (with country code): '),
-      password: async () => ask('🔐 2FA password (press Enter if none): '),
-      phoneCode: async () => ask('📨 OTP code from Telegram: '),
-      onError: (err) => console.error('[Telegram] Auth error:', err.message),
-    })
-
-    const savedSession = client.session.save()
-    console.log('[Telegram] ✅ Connected!')
-    console.log('[Telegram] 💾 Save this session string to .env → TELEGRAM_SESSION=')
-    console.log(savedSession)
-    rl.close()
-
-    // Channels to monitor
-    const OSINT_CHANNELS = [
-      '@IntelSky',
-      '@MiddleEastSpectator',
-      '@OSINTdefender',
-      '@intelslava',
-    ]
-
-    client.addEventHandler(async (event) => {
-      try {
-        const msg = event.message
-        if (!msg?.message) return
-
-        const text = msg.message
-        if (text.length < 20) return // Skip very short messages
-
-        const coords = extractCoordinates(text)
-        if (!coords) return
-
-        const { type, severity } = classifyEvent(text)
-
-        const newEvent = {
-          id: `tg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          coords,
-          type,
-          severity,
-          description: text.replace(/\n/g, ' ').slice(0, 280),
-          source: 'TELEGRAM',
-          timestamp: Date.now(),
-        }
-
-        osintEvents = [newEvent, ...osintEvents].slice(0, 200)
-        io.emit('osint:new', newEvent)
-        console.log(`[Telegram] 📡 ${type} [${severity}] @ ${coords[1].toFixed(2)},${coords[0].toFixed(2)}`)
-      } catch (handlerErr) {
-        console.error('[Telegram] Handler error:', handlerErr.message)
-      }
-    }, new NewMessage({ chats: OSINT_CHANNELS }))
-
-    console.log(`[Telegram] 👁️  Monitoring: ${OSINT_CHANNELS.join(', ')}`)
-  } catch (err) {
-    console.error('[Telegram] Failed to start:', err.message)
-    rl.close()
-  }
-}
 
 // ─── REST API endpoints ───────────────────────────────────────────────────────
 
@@ -594,27 +496,44 @@ app.get('/api/health', (req, res) => {
     counts: {
       aircraft: aircraftData.length,
       fires: fireData.length,
-      osint: osintEvents.length,
     },
   })
 })
 
 app.get('/api/aircraft', (req, res) => res.json(aircraftData))
 app.get('/api/fires', (req, res) => res.json(fireData))
-app.get('/api/osint', (req, res) => res.json(osintEvents))
+
+app.get('/api/airports', async (req, res) => {
+  try {
+    const r = await axios.get('http://api.aviationstack.com/v1/airports', {
+      params: { access_key: process.env.AVIATIONSTACK_API_KEY, country_iso2: req.query.country, limit: 100 },
+      timeout: 15000,
+    })
+    res.json(r.data.data || [])
+  } catch (e) { console.error('[airports]', e.message); res.json([]) }
+})
+
+app.get('/api/flights', async (req, res) => {
+  try {
+    const r = await axios.get('http://api.aviationstack.com/v1/flights', {
+      params: { access_key: process.env.AVIATIONSTACK_API_KEY, dep_iata: req.query.airport, flight_date: req.query.date, limit: 100 },
+      timeout: 15000,
+    })
+    res.json(r.data.data || [])
+  } catch (e) { console.error('[flights]', e.message); res.json([]) }
+})
 
 // ─── Socket.io connection ─────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
-  console.log(`[Socket] Client connected: ${socket.id}`)
+  log('Socket', `Client connected: ${socket.id}`)
 
   // Push current state to newly connected client
   socket.emit('aircraft:update', aircraftData)
   socket.emit('fires:update', fireData)
-  socket.emit('osint:update', osintEvents)
 
   socket.on('disconnect', () => {
-    console.log(`[Socket] Client disconnected: ${socket.id}`)
+    log('Socket', `Client disconnected: ${socket.id}`)
   })
 })
 
@@ -627,13 +546,13 @@ server.listen(PORT, async () => {
 ║  http://localhost:${PORT}                    ║
 ╚══════════════════════════════════════════╝`)
 
+  initFirestore()
+
   // Initial data fetch
   await Promise.all([fetchAircraft(), fetchFIRMS()])
 
   // Scheduled intervals
-  setInterval(fetchAircraft, 15_000)   // Every 15s
-  setInterval(fetchFIRMS, 300_000)     // Every 5min
+  setInterval(fetchAircraft, 60_000)   // Every 60s
+  setInterval(fetchFIRMS, 10_000)      // Every 10s (FIRMS limit: 5000/10min)
 
-  // Telegram OSINT (optional)
-  initTelegram().catch(err => console.error('[Telegram] Init failed:', err.message))
 })

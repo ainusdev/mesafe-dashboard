@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { io } from 'socket.io-client'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
@@ -6,21 +6,47 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 // ─── Module-level constants ────────────────────────────────────────────────
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
-const BACKEND_URL = 'http://localhost:3001'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'
 
 const REGIONS = {
-  TEHRAN:    { name: 'TEHRAN',    center: [51.3890, 35.6892], zoom: 7 },
-  GAZA:      { name: 'GAZA',      center: [34.4668, 31.5017], zoom: 8 },
-  BEIRUT:    { name: 'BEIRUT',    center: [35.4960, 33.8938], zoom: 8 },
-  DAMASCUS:  { name: 'DAMASCUS',  center: [36.2765, 33.5138], zoom: 7 },
-  ALEPPO:    { name: 'ALEPPO',    center: [37.1612, 36.2021], zoom: 7 },
-  BAGHDAD:   { name: 'BAGHDAD',   center: [44.3661, 33.3152], zoom: 7 },
-  MOSUL:     { name: 'MOSUL',     center: [43.1189, 36.3356], zoom: 8 },
-  SANAA:     { name: "SANA'A",    center: [44.2066, 15.3694], zoom: 7 },
-  ADEN:      { name: 'ADEN',      center: [45.0356, 12.7797], zoom: 8 },
-  JERUSALEM: { name: 'JERUSALEM', center: [35.2137, 31.7683], zoom: 8 },
-  WESTBANK:  { name: 'WEST BANK', center: [35.2433, 31.9466], zoom: 8 },
-  RIYADH:    { name: 'RIYADH',    center: [46.6753, 24.6877], zoom: 7 },
+  IRAN:         { name: 'IRAN',         center: [53.6880, 32.4279], zoom: 5 },
+  IRAQ:         { name: 'IRAQ',         center: [43.6793, 33.2232], zoom: 5 },
+  ISRAEL:       { name: 'ISRAEL',       center: [34.8516, 31.0461], zoom: 5 },
+  JORDAN:       { name: 'JORDAN',       center: [36.2384, 31.2457], zoom: 5 },
+  LEBANON:      { name: 'LEBANON',      center: [35.8623, 33.8547], zoom: 5 },
+  PALESTINE:    { name: 'PALESTINE',    center: [34.5,    31.8   ], zoom: 5 },
+  SAUDI_ARABIA: { name: 'SAUDI ARABIA', center: [45.0792, 23.8859], zoom: 5 },
+  SYRIA:        { name: 'SYRIA',        center: [38.9968, 34.8021], zoom: 5 },
+  YEMEN:        { name: 'YEMEN',        center: [47.5079, 15.5527], zoom: 5 },
+}
+
+const REGION_TZ = {
+  IRAN:         'Asia/Tehran',
+  IRAQ:         'Asia/Baghdad',
+  ISRAEL:       'Asia/Jerusalem',
+  JORDAN:       'Asia/Amman',
+  LEBANON:      'Asia/Beirut',
+  PALESTINE:    'Asia/Gaza',
+  SAUDI_ARABIA: 'Asia/Riyadh',
+  SYRIA:        'Asia/Damascus',
+  YEMEN:        'Asia/Aden',
+}
+
+const REGION_CODE = {
+  IRAN: 'IRN', IRAQ: 'IRQ', ISRAEL: 'ISR', JORDAN: 'JOR',
+  LEBANON: 'LBN', PALESTINE: 'PSE', SAUDI_ARABIA: 'KSA',
+  SYRIA: 'SYR', YEMEN: 'YEM',
+}
+
+const _tzFmt = {}
+function formatTZ(date, tz) {
+  if (!_tzFmt[tz]) {
+    _tzFmt[tz] = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour12: false,
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    })
+  }
+  return _tzFmt[tz].format(date)
 }
 
 // Civilian airliner — top-down silhouette (wide body, swept wings + stabilizers)
@@ -66,13 +92,13 @@ function offsetCoord(center, rangeKm) {
 }
 
 function generateAircraft(center) {
-  return Array.from({ length: randInt(8, 12) }, (_, i) => ({
+  return Array.from({ length: randInt(15, 25) }, (_, i) => ({
     id: `ac-${Date.now()}-${i}`,
-    coords: offsetCoord(center, 80),
+    coords: offsetCoord(center, 200),
     heading: rand(0, 360),
-    speed: rand(0.002, 0.006),
+    speed: rand(0.008, 0.018),
     callsign: randItem(CALLSIGNS),
-    altitude: randInt(5000, 35000),
+    altitude: randInt(5000, 45000),
     actype: randItem(['B77W', 'A320', 'A330', 'F-16', 'C-130', 'UH-60', 'MQ-9']),
     military: Math.random() < 0.3,
     route: Math.random() < 0.6 ? randItem(['DXB→LHR','EWR→DXB','TLV→JFK','THR→VIE','BEY→CDG','DOH→LHR']) : null,
@@ -81,18 +107,20 @@ function generateAircraft(center) {
 }
 
 function generateFires(center) {
-  return Array.from({ length: randInt(5, 15) }, (_, i) => {
-    const d = new Date(Date.now() - randInt(0, 86400000))
+  return Array.from({ length: randInt(15, 30) }, (_, i) => {
+    // 24시간에 걸쳐 고르게 분포 — time window 필터 테스트용
+    const ageMs = randInt(0, 86400000)
+    const d = new Date(Date.now() - ageMs)
     const hhmm = d.getUTCHours().toString().padStart(2, '0') + d.getUTCMinutes().toString().padStart(2, '0')
-    const dateStr = d.toISOString().slice(0, 10)
     return {
       id: `fire-${Date.now()}-${i}`,
-      coords: offsetCoord(center, 60),
+      coords: offsetCoord(center, 150),
       brightness: rand(0.3, 1.0),
       frp: rand(5, 200),
       intensity: randItem(['LOW', 'MEDIUM', 'HIGH', 'EXTREME']),
-      acqDate: dateStr,
+      acqDate: d.toISOString().slice(0, 10),
       acqTime: hhmm,
+      acqTimestamp: d.getTime(),
       confidence: randItem(['high', 'medium', 'low', 'nominal']),
     }
   })
@@ -100,9 +128,9 @@ function generateFires(center) {
 
 function tickAircraft(aircraft, center) {
   const d = 1 / 111
-  const bound = 90
+  const bound = 220
   return aircraft.map(ac => {
-    const heading = (ac.heading + rand(-3, 3) + 360) % 360
+    const heading = (ac.heading + rand(-5, 5) + 360) % 360
     const rad = (heading - 90) * (Math.PI / 180)
     const coords = [
       ac.coords[0] + Math.cos(rad) * ac.speed,
@@ -112,40 +140,42 @@ function tickAircraft(aircraft, center) {
       Math.abs(coords[0] - center[0]) / d > bound ||
       Math.abs(coords[1] - center[1]) / d > bound
     return outOfBounds
-      ? { ...ac, coords: offsetCoord(center, 70), heading: rand(0, 360) }
+      ? { ...ac, coords: offsetCoord(center, 180), heading: rand(0, 360) }
       : { ...ac, coords, heading }
   })
 }
 
-function tickFires(fires) {
-  let result = fires.map(f => ({
+function tickFires(fires, center) {
+  // 기존 핫스팟 brightness 소폭 변동 (삭제 없음)
+  const updated = fires.map(f => ({
     ...f,
-    brightness: Math.max(0.1, Math.min(1.0, f.brightness + rand(-0.05, 0.05))),
+    brightness: Math.max(0.1, Math.min(1.0, f.brightness + rand(-0.03, 0.03))),
   }))
-  if (Math.random() < 0.3) {
-    if (Math.random() < 0.5 && result.length > 5) {
-      result = result.slice(0, -1)
-    } else {
-      const ref = result[0]
-      const base = ref ? ref.coords : [51.389, 35.689]
-      result.push({
-        id: `fire-${Date.now()}`,
-        coords: [base[0] + rand(-0.5, 0.5), base[1] + rand(-0.5, 0.5)],
-        brightness: rand(0.3, 0.8),
-        frp: rand(5, 100),
-        intensity: randItem(['LOW', 'MEDIUM', 'HIGH']),
-      })
-    }
+  // 매 틱 1~3개 신규 핫스팟 추가 (현재 시각)
+  const newCount = randInt(1, 3)
+  for (let i = 0; i < newCount; i++) {
+    const ts = Date.now() - randInt(0, 86400000)
+    const d = new Date(ts)
+    const hhmm = d.getUTCHours().toString().padStart(2, '0') + d.getUTCMinutes().toString().padStart(2, '0')
+    updated.push({
+      id: `fire-${ts}-${Math.random().toString(36).slice(2, 6)}`,
+      coords: offsetCoord(center, 150),
+      brightness: rand(0.3, 1.0),
+      frp: rand(5, 200),
+      intensity: randItem(['LOW', 'MEDIUM', 'HIGH', 'EXTREME']),
+      acqDate: d.toISOString().slice(0, 10),
+      acqTime: hhmm,
+      acqTimestamp: ts,
+      confidence: randItem(['high', 'medium', 'low', 'nominal']),
+    })
   }
-  return result
+  // 최대 1000개 캡 (메모리 보호)
+  return updated.length > 1000 ? updated.slice(-1000) : updated
 }
 
 // Aircraft data normalisation (backend vs mock use different field names)
 function normaliseAircraft(ac) {
-  // Backend sends: { lat, lon, ...} — mock uses: { coords: [lon, lat], ...}
-  if (ac.lat !== undefined) {
-    return { ...ac, coords: [ac.lon, ac.lat] }
-  }
+  if (ac.lat !== undefined) return { ...ac, coords: [ac.lon, ac.lat] }
   return ac
 }
 
@@ -154,6 +184,12 @@ function getFilteredAircraft(data, filter) {
   if (filter === 'MILITARY') return norm.filter(a => a.military)
   if (filter === 'CIVILIAN') return norm.filter(a => !a.military)
   return norm
+}
+
+function getFilteredFires(data, hours) {
+  if (!hours || hours >= 24) return data
+  const cutoff = Date.now() - hours * 3600 * 1000
+  return data.filter(f => !f.acqTimestamp || f.acqTimestamp >= cutoff)
 }
 
 function toGeoJSONAircraft(data) {
@@ -190,6 +226,7 @@ function toGeoJSONFires(data) {
         intensity: f.intensity || 'LOW',
         acqDate: f.acqDate || '',
         acqTime: f.acqTime || '',
+        acqTimestamp: f.acqTimestamp || 0,
         confidence: f.confidence || '',
       },
     })),
@@ -210,7 +247,7 @@ function buildAircraftPopupHTML(props) {
         ✈ ${props.callsign || '???'}
       </div>
       <div style="color:#9ca3af;font-size:10px;margin-bottom:6px">${acLabel}</div>
-      ${props.route ? `<div><span style="color:#6b7280">ROUTE:</span> <span style="color:#fbbf24">${props.route}</span></div>` : ''}
+      <div><span style="color:#6b7280">ROUTE:</span> <span style="color:#fbbf24">${props.route || '—'}</span></div>
       ${props.registration ? `<div><span style="color:#6b7280">REG:</span> ${props.registration}</div>` : ''}
       <div><span style="color:#6b7280">TYPE:</span> ${props.actype || '—'}</div>
       <div><span style="color:#6b7280">ALT:</span> ${altFt} ft</div>
@@ -224,10 +261,20 @@ function buildFirePopupHTML(props) {
   const c = { LOW: '#60a5fa', MEDIUM: '#fbbf24', HIGH: '#f97316', EXTREME: '#ef4444' }[props.intensity] || '#4ade80'
   const confColor = { high: '#4ade80', nominal: '#4ade80', medium: '#fbbf24', low: '#f87171' }[(props.confidence || '').toLowerCase()] || '#9ca3af'
 
-  // Format acqTime "0625" → "06:25 UTC"
-  const rawTime = (props.acqTime || '').toString().padStart(4, '0')
-  const timeStr = rawTime.length >= 4 ? `${rawTime.slice(0, 2)}:${rawTime.slice(2, 4)} UTC` : '—'
-  const dateStr = props.acqDate || '—'
+  const fmtTime = (ts, tz) => {
+    if (!ts) return '—'
+    try {
+      return new Intl.DateTimeFormat('en-GB', {
+        timeZone: tz, hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+      }).format(new Date(ts)).replace(',', '')
+    } catch { return '—' }
+  }
+
+  const ts = props.acqTimestamp || 0
+  const utcStr   = fmtTime(ts, 'UTC')
+  const localStr = fmtTime(ts, Intl.DateTimeFormat().resolvedOptions().timeZone)
 
   return `
     <div style="font-family:'Courier New',monospace;font-size:11px;line-height:1.7;color:#4ade80">
@@ -235,8 +282,10 @@ function buildFirePopupHTML(props) {
                   border-bottom:1px solid #fbbf2444;padding-bottom:4px">
         🔥 FIRE HOTSPOT
       </div>
-      <div><span style="color:#6b7280">DETECTED:</span> <span style="color:#e5e7eb">${dateStr}</span></div>
-      <div><span style="color:#6b7280">TIME:</span> <span style="color:#e5e7eb">${timeStr}</span></div>
+      <div style="margin-bottom:4px">
+        <div><span style="color:#6b7280;display:inline-block;width:36px">UTC</span> <span style="color:#e5e7eb">${utcStr}</span></div>
+        <div><span style="color:#6b7280;display:inline-block;width:36px">LCL</span> <span style="color:#e5e7eb">${localStr}</span></div>
+      </div>
       <div style="height:1px;background:rgba(74,222,128,0.1);margin:5px 0"></div>
       <div><span style="color:#6b7280">INTENSITY:</span> <span style="color:${c}">${props.intensity}</span></div>
       <div><span style="color:#6b7280">FRP:</span> ${Math.round(props.frp || 0)} MW</div>
@@ -250,33 +299,65 @@ function buildFirePopupHTML(props) {
 
 export default function App() {
   const [activeRegion, setActiveRegion] = useState(() => {
-    const saved = localStorage.getItem('sentinel_region')
-    return (saved && REGIONS[saved]) ? saved : 'TEHRAN'
+    const saved = localStorage.getItem('mesafe_region')
+    return (saved && REGIONS[saved]) ? saved : 'IRAN'
   })
   const [layers, setLayers] = useState({ aircraft: true, fires: true })
   const [counts, setCounts] = useState({ aircraft: 0, fires: 0 })
+  const [fireHoursFilter, setFireHoursFilter] = useState(24)
   const [currentTime, setCurrentTime] = useState(new Date())
   const [cursorCoords, setCursorCoords] = useState(null)
   const [mapLoaded, setMapLoaded] = useState(false)
   const [backendConnected, setBackendConnected] = useState(false)
-  const [aircraftFilter, setAircraftFilter] = useState('ALL') // 'ALL' | 'MILITARY' | 'CIVILIAN'
+  const [aircraftFilter, setAircraftFilter] = useState('ALL')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [dataMode, setDataMode] = useState('live')       // 'live' | 'mock'
+  const [mockState, setMockState] = useState('stopped')  // 'stopped' | 'running'
 
   const mapRef = useRef(null)
   const mapInstanceRef = useRef(null)
-  const dataIntervalRef = useRef(null)
+  const mockIntervalRef = useRef(null)
   const clockIntervalRef = useRef(null)
   const aircraftDataRef = useRef([])
   const fireDataRef = useRef([])
   const activeRegionRef = useRef(activeRegion)
   const aircraftFilterRef = useRef('ALL')
   const backendConnectedRef = useRef(false)
+  const fireHoursFilterRef = useRef(24)
+  const dataModeRef = useRef('live')
+  const mockStateRef = useRef('stopped')
   const popupRef = useRef(null)
   const socketRef = useRef(null)
 
   useEffect(() => { activeRegionRef.current = activeRegion }, [activeRegion])
   useEffect(() => { aircraftFilterRef.current = aircraftFilter }, [aircraftFilter])
-  useEffect(() => { localStorage.setItem('sentinel_region', activeRegion) }, [activeRegion])
+  useEffect(() => { fireHoursFilterRef.current = fireHoursFilter }, [fireHoursFilter])
+  useEffect(() => { dataModeRef.current = dataMode }, [dataMode])
+  useEffect(() => { mockStateRef.current = mockState }, [mockState])
+  useEffect(() => { localStorage.setItem('mesafe_region', activeRegion) }, [activeRegion])
+
+  // ── Stable helpers (all deps are refs — never stale) ─────────────────────
+
+  const updateSources = useCallback(() => {
+    const map = mapInstanceRef.current
+    if (!map?.isStyleLoaded()) return
+    const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
+    const filteredFires = getFilteredFires(fireDataRef.current, fireHoursFilterRef.current)
+    map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
+    map.getSource('fire-source')?.setData(toGeoJSONFires(filteredFires))
+    setCounts({ aircraft: filtered.length, fires: filteredFires.length })
+  }, [])
+
+  const clearMapData = useCallback(() => {
+    aircraftDataRef.current = []
+    fireDataRef.current = []
+    const map = mapInstanceRef.current
+    if (map?.isStyleLoaded()) {
+      map.getSource('aircraft-source')?.setData({ type: 'FeatureCollection', features: [] })
+      map.getSource('fire-source')?.setData({ type: 'FeatureCollection', features: [] })
+    }
+    setCounts({ aircraft: 0, fires: 0 })
+  }, [])
 
   // ── 1. Clock ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -290,8 +371,8 @@ export default function App() {
 
     mapboxgl.accessToken = MAPBOX_TOKEN
 
-    const savedKey = localStorage.getItem('sentinel_region')
-    const initRegion = (savedKey && REGIONS[savedKey]) ? REGIONS[savedKey] : REGIONS.TEHRAN
+    const savedKey = localStorage.getItem('mesafe_region')
+    const initRegion = (savedKey && REGIONS[savedKey]) ? REGIONS[savedKey] : REGIONS.IRAN
 
     const map = new mapboxgl.Map({
       container: mapRef.current,
@@ -305,7 +386,6 @@ export default function App() {
     map.on('mousemove', e => setCursorCoords([e.lngLat.lng, e.lngLat.lat]))
 
     map.on('load', () => {
-      // Load aircraft icons: civilian = airliner shape, military = delta fighter shape
       const loadIcon = (name, svgFn, color) =>
         new Promise(resolve => {
           const img = new Image()
@@ -351,7 +431,6 @@ export default function App() {
           type: 'geojson',
           data: { type: 'FeatureCollection', features: [] },
         })
-        // Heatmap — visible at all zooms, fades out as circles take over above zoom 10
         map.addLayer({
           id: 'fire-heat-layer',
           type: 'heatmap',
@@ -372,7 +451,6 @@ export default function App() {
             'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.85, 12, 0.25],
           },
         })
-        // Circles — always visible, zoom-scaled radius, brightness-scaled color
         map.addLayer({
           id: 'fire-circle-layer',
           type: 'circle',
@@ -423,119 +501,108 @@ export default function App() {
     const socket = io(BACKEND_URL, {
       transports: ['websocket'],
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 3000,
       timeout: 5000,
     })
     socketRef.current = socket
 
-    const updateAcSource = (data) => {
-      const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) return
-      const src = map.getSource('aircraft-source')
-      if (src) src.setData(toGeoJSONAircraft(getFilteredAircraft(data, aircraftFilterRef.current)))
-    }
-    const updateFireSource = (data) => {
-      const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) return
-      map.getSource('fire-source')?.setData(toGeoJSONFires(data))
-    }
-
     socket.on('connect', () => {
       backendConnectedRef.current = true
       setBackendConnected(true)
-      console.log('[Socket] Connected to backend')
     })
 
     socket.on('disconnect', () => {
       backendConnectedRef.current = false
       setBackendConnected(false)
-      console.log('[Socket] Disconnected from backend')
     })
 
     socket.on('aircraft:update', (data) => {
+      if (dataModeRef.current !== 'live') return
       aircraftDataRef.current = data
-      updateAcSource(data)
-      // Use filtered count so display never flickers when a filter is active
+      const map = mapInstanceRef.current
+      if (!map?.isStyleLoaded()) return
       const filtered = getFilteredAircraft(data, aircraftFilterRef.current)
+      map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
       setCounts(prev => ({ ...prev, aircraft: filtered.length }))
     })
 
     socket.on('fires:update', (data) => {
-      // Ignore empty updates — backend may emit [] before FIRMS loads;
-      // preserves existing mock/real fire data until real data arrives.
-      if (data.length === 0) return
+      if (dataModeRef.current !== 'live' || data.length === 0) return
       fireDataRef.current = data
-      updateFireSource(data)
-      setCounts(prev => ({ ...prev, fires: data.length }))
+      const map = mapInstanceRef.current
+      if (!map?.isStyleLoaded()) return
+      const filtered = getFilteredFires(data, fireHoursFilterRef.current)
+      map.getSource('fire-source')?.setData(toGeoJSONFires(filtered))
+      setCounts(prev => ({ ...prev, fires: filtered.length }))
     })
 
     return () => socket.disconnect()
   }, [])
 
-  // ── 4. Mock data tick (runs only when backend is NOT connected) ────────────
-  useEffect(() => {
-    if (!mapLoaded) return
-
-    // Only seed mock data if backend hasn't already populated the refs
-    const region = REGIONS[activeRegionRef.current]
-    if (aircraftDataRef.current.length === 0) aircraftDataRef.current = generateAircraft(region.center)
-    if (fireDataRef.current.length === 0) fireDataRef.current = generateFires(region.center)
-
-    const updateSources = () => {
-      const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) return
-
-      const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
-      map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
-      map.getSource('fire-source')?.setData(toGeoJSONFires(fireDataRef.current))
-
-      const filteredCount = filtered.length
-      setCounts({
-        aircraft: filteredCount,
-        fires: fireDataRef.current.length,
-      })
-    }
-
-    updateSources()
-
-    dataIntervalRef.current = setInterval(() => {
-      // Mock mode: advance simulation data
-      if (!backendConnectedRef.current) {
-        const center = REGIONS[activeRegionRef.current].center
-        aircraftDataRef.current = tickAircraft(aircraftDataRef.current, center)
-        fireDataRef.current = tickFires(fireDataRef.current)
-      }
-
-      // Always re-render all sources every tick (live or mock)
-      // — prevents fire layer from going blank if a socket event was missed
-      updateSources()
-    }, 2000)
-
-    return () => clearInterval(dataIntervalRef.current)
-  }, [mapLoaded])
-
-  // ── 5. Region flyTo + data re-seed ────────────────────────────────────────
+  // ── 5. Region flyTo + mock reseed ────────────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current
     if (!map || !mapLoaded) return
     const region = REGIONS[activeRegion]
     map.flyTo({ center: region.center, zoom: region.zoom, duration: 1500 })
 
-    if (!backendConnectedRef.current) {
+    // Mock 실행 중이면 새 지역 기준으로 즉시 재시드
+    if (dataModeRef.current === 'mock' && mockStateRef.current === 'running') {
       aircraftDataRef.current = generateAircraft(region.center)
       fireDataRef.current = generateFires(region.center)
-
-      // Immediately update sources
-      if (map.isStyleLoaded()) {
-        const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
-        map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
-        map.getSource('fire-source')?.setData(toGeoJSONFires(fireDataRef.current))
-      }
+      updateSources()
     }
-  }, [activeRegion, mapLoaded])
+  }, [activeRegion, mapLoaded, updateSources])
 
-  // ── 6. Layer visibility ───────────────────────────────────────────────────
+  // ── Mock controls ─────────────────────────────────────────────────────────
+
+  function switchMode(mode) {
+    if (mode === dataModeRef.current) return
+    dataModeRef.current = mode   // ref는 즉시, state는 re-render용
+    clearInterval(mockIntervalRef.current)
+    mockStateRef.current = 'stopped'
+    setMockState('stopped')
+    clearMapData()
+    setDataMode(mode)
+  }
+
+  function mockStart() {
+    if (dataModeRef.current !== 'mock') return
+    mockStateRef.current = 'running'
+    setMockState('running')
+    const center = REGIONS[activeRegionRef.current].center
+    aircraftDataRef.current = generateAircraft(center)
+    fireDataRef.current = generateFires(center)
+    updateSources()
+    clearInterval(mockIntervalRef.current)
+    mockIntervalRef.current = setInterval(() => {
+      const c = REGIONS[activeRegionRef.current].center
+      aircraftDataRef.current = tickAircraft(aircraftDataRef.current, c)
+      fireDataRef.current = tickFires(fireDataRef.current, c)
+      updateSources()
+    }, 1000)
+  }
+
+  function mockStop() {
+    clearInterval(mockIntervalRef.current)
+    mockStateRef.current = 'stopped'
+    setMockState('stopped')
+  }
+
+  function mockClear() {
+    clearInterval(mockIntervalRef.current)
+    mockStateRef.current = 'stopped'
+    setMockState('stopped')
+    clearMapData()
+  }
+
+  // ── 6. Fire time filter / aircraft filter → re-render ────────────────────
+  useEffect(() => {
+    if (mapLoaded) updateSources()
+  }, [fireHoursFilter, aircraftFilter, mapLoaded, updateSources])
+
+  // ── 7. Layer visibility ───────────────────────────────────────────────────
   useEffect(() => {
     const map = mapInstanceRef.current
     if (!map || !mapLoaded) return
@@ -549,15 +616,6 @@ export default function App() {
       })
     })
   }, [layers, mapLoaded])
-
-  // ── 7. Aircraft filter update ─────────────────────────────────────────────
-  useEffect(() => {
-    const map = mapInstanceRef.current
-    if (!map?.isStyleLoaded()) return
-    const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilter)
-    map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
-    setCounts(prev => ({ ...prev, aircraft: filtered.length }))
-  }, [aircraftFilter, mapLoaded])
 
   const toggleLayer = key => setLayers(prev => ({ ...prev, [key]: !prev[key] }))
 
@@ -577,14 +635,12 @@ export default function App() {
               <rect y="12.5" width="16" height="1.5" rx="1"/>
             </svg>
           </button>
-          {/* Desktop AO badge */}
           <div className="hidden md:flex items-center gap-2">
             <span className="text-green-400/40 text-xs tracking-widest">AO</span>
             <span className="px-3 py-1 text-xs tracking-wider border border-green-400/50 bg-green-400/10 text-green-300">
               {REGIONS[activeRegion]?.name || activeRegion}
             </span>
           </div>
-          {/* Mobile AO compact */}
           <span className="md:hidden text-green-300 text-xs tracking-wider border border-green-400/30 px-2 py-0.5 truncate">
             {REGIONS[activeRegion]?.name || activeRegion}
           </span>
@@ -592,34 +648,47 @@ export default function App() {
 
         {/* Center title */}
         <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
-          <span className="text-green-300 text-xs md:text-sm tracking-[0.3em] md:tracking-[0.35em] font-bold">SENTINEL</span>
-          <span className="hidden md:block text-green-400/35 text-[10px] tracking-widest">CONFLICT MONITOR</span>
+          <span className="text-green-300 text-xs md:text-sm tracking-[0.3em] md:tracking-[0.35em] font-bold">MESAFE</span>
+          <span className="hidden md:block text-green-400/35 text-[10px] tracking-widest">MIDDLE EAST SAFETY</span>
         </div>
 
-        {/* Right: LIVE/MOCK + clock (desktop) */}
+        {/* Right: mode + connection badge */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* LIVE/MOCK badge — always visible */}
-          <div className={`flex items-center gap-1.5 px-2 py-1 border text-xs
-            ${backendConnected
-              ? 'border-green-400/30 bg-green-400/10 text-green-400'
-              : 'border-amber-400/30 bg-amber-400/10 text-amber-400'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${backendConnected ? 'bg-green-400 animate-pulse' : 'bg-amber-400'}`} />
-            {backendConnected ? 'LIVE' : 'MOCK'}
-          </div>
-
-          {/* Desktop only: clock + cursor */}
-          <div className="hidden md:block text-right">
-            <div className="text-green-300 text-xs tracking-widest">
-              {currentTime.toUTCString().slice(17, 25)} UTC
+          {dataMode === 'live' ? (
+            <div className={`flex items-center gap-1.5 px-2 py-1 border text-xs tracking-wider
+              ${backendConnected
+                ? 'border-green-400/40 bg-green-400/10 text-green-400'
+                : 'border-amber-400/30 bg-amber-400/10 text-amber-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0
+                ${backendConnected ? 'bg-green-400 animate-pulse' : 'bg-amber-400 animate-pulse'}`} />
+              {backendConnected ? 'LIVE' : 'CONNECTING'}
             </div>
-            {cursorCoords && (
-              <div className="text-green-400/35 text-[10px]">
-                {cursorCoords[1].toFixed(4)}N {cursorCoords[0].toFixed(4)}E
-              </div>
-            )}
-          </div>
+          ) : (
+            <div className={`flex items-center gap-1.5 px-2 py-1 border text-xs tracking-wider
+              ${mockState === 'running'
+                ? 'border-blue-400/40 bg-blue-400/10 text-blue-300'
+                : 'border-zinc-500/30 bg-zinc-800/50 text-zinc-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0
+                ${mockState === 'running' ? 'bg-blue-400 animate-pulse' : 'bg-zinc-500'}`} />
+              {mockState === 'running' ? 'SIM RUNNING' : 'SIM IDLE'}
+            </div>
+          )}
         </div>
       </header>
+
+      {/* ── TIME HUD (fixed right) ── */}
+      <div className="fixed top-12 md:top-14 right-0 z-30 bg-zinc-950/95 border-l border-b border-green-400/20 whitespace-nowrap">
+        {[
+          ['UTC', 'UTC'],
+          ['LCL', Intl.DateTimeFormat().resolvedOptions().timeZone],
+          [REGION_CODE[activeRegion] ?? activeRegion.slice(0, 3), REGION_TZ[activeRegion]],
+        ].map(([label, tz], i) => (
+          <div key={label} className={`flex items-center gap-3 px-3 py-1 ${i < 2 ? 'border-b border-green-400/10' : ''}`}>
+            <span className="text-green-400/35 text-[10px] tracking-widest w-7 shrink-0">{label}</span>
+            <span className="text-green-300 text-[11px] tracking-widest tabular-nums">{formatTZ(currentTime, tz)}</span>
+          </div>
+        ))}
+      </div>
 
       {/* ── MAIN ── */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -630,7 +699,7 @@ export default function App() {
             onClick={() => setSidebarOpen(false)} />
         )}
 
-        {/* LEFT sidebar — slide-in drawer on mobile, fixed column on desktop */}
+        {/* LEFT sidebar */}
         <aside className={`
           fixed md:relative inset-y-0 left-0
           w-64 md:w-52
@@ -647,8 +716,60 @@ export default function App() {
             <button onClick={() => setSidebarOpen(false)} className="text-green-400/60 active:text-green-400 text-lg leading-none">✕</button>
           </div>
 
+          {/* Data mode selector */}
+          <div className="flex items-center gap-2 mb-2 border-b border-green-400/20 pb-2">
+            <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
+            <span className="text-green-400/50 text-xs tracking-widest">DATA MODE</span>
+          </div>
+          <div className="grid grid-cols-2 gap-1 mb-3">
+            {[['live', 'LIVE'], ['mock', 'MOCK']].map(([mode, label]) => (
+              <button key={mode} onClick={() => switchMode(mode)}
+                className={`py-2 text-xs border transition-all tracking-widest
+                  ${dataMode === mode
+                    ? mode === 'live'
+                      ? 'border-green-400/60 bg-green-400/15 text-green-300'
+                      : 'border-blue-400/50 bg-blue-400/10 text-blue-300'
+                    : 'border-green-400/10 text-green-400/30 hover:border-green-400/30 hover:text-green-400/60'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Mock simulation controls */}
+          {dataMode === 'mock' && (
+            <div className="mb-3 border border-blue-400/20 bg-blue-400/5 p-2">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-0.5 h-3 bg-blue-400/50 shrink-0" />
+                <span className="text-blue-400/60 text-xs tracking-widest">SIMULATION</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1">
+                <button onClick={mockStart} disabled={mockState === 'running'}
+                  className={`py-1.5 text-[11px] border transition-all
+                    ${mockState === 'running'
+                      ? 'border-blue-400/50 bg-blue-400/15 text-blue-300 cursor-default'
+                      : 'border-green-400/30 text-green-400/70 hover:border-green-400/60 hover:text-green-300'}`}>
+                  ▶ START
+                </button>
+                <button onClick={mockStop} disabled={mockState !== 'running'}
+                  className={`py-1.5 text-[11px] border transition-all
+                    ${mockState !== 'running'
+                      ? 'border-green-400/10 text-green-400/20 cursor-default'
+                      : 'border-amber-400/40 text-amber-400/80 hover:border-amber-400/70 hover:text-amber-300'}`}>
+                  ⏸ STOP
+                </button>
+                <button onClick={mockClear}
+                  className="py-1.5 text-[11px] border border-green-400/20 text-green-400/50 hover:border-red-400/50 hover:text-red-400/80 transition-all">
+                  ✕ CLR
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Region selector */}
-          <div className="text-green-400/40 text-xs tracking-widest mb-2 border-b border-green-400/20 pb-2">AREA OF OPERATIONS</div>
+          <div className="flex items-center gap-2 mb-2 border-b border-green-400/20 pb-2">
+            <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
+            <span className="text-green-400/50 text-xs tracking-widest">COUNTRY</span>
+          </div>
           {Object.entries(REGIONS).map(([key, r]) => (
             <button key={key} onClick={() => { setActiveRegion(key); setSidebarOpen(false) }}
               className={`w-full text-left px-3 py-2 md:py-1.5 text-xs border mb-0.5 transition-all tracking-wide
@@ -659,11 +780,14 @@ export default function App() {
             </button>
           ))}
 
-          <div className="text-green-400/40 text-xs tracking-widest mt-3 mb-2 border-b border-green-400/20 pb-2">LAYER CONTROL</div>
-
+          {/* Layer control */}
+          <div className="flex items-center gap-2 mt-3 mb-2 border-b border-green-400/20 pb-2">
+            <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
+            <span className="text-green-400/50 text-xs tracking-widest">LAYER CONTROL</span>
+          </div>
           {[
-            { key: 'aircraft', label: 'ADS-B TRACKS', count: counts.aircraft, icon: '✈' },
-            { key: 'fires',    label: 'FIRE HOTSPOTS', count: counts.fires,   icon: '🔥' },
+            { key: 'aircraft', label: 'ADS-B TRACKS',  count: counts.aircraft, icon: '✈' },
+            { key: 'fires',    label: 'FIRE HOTSPOTS', count: counts.fires,    icon: '🔥' },
           ].map(({ key, label, count, icon }) => (
             <button key={key} onClick={() => toggleLayer(key)}
               className={`flex items-center justify-between px-3 py-2 border text-xs tracking-wide transition-all
@@ -675,9 +799,31 @@ export default function App() {
             </button>
           ))}
 
+          {/* Fire time filter */}
+          <div className="mt-3 border-t border-green-400/20 pt-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-0.5 h-3 bg-orange-400/50 shrink-0" />
+              <span className="text-green-400/50 text-xs tracking-widest">FIRE TIME WINDOW</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {[1, 6, 12, 24].map(h => (
+                <button key={h} onClick={() => setFireHoursFilter(h)}
+                  className={`py-1.5 text-xs border transition-all tracking-wide
+                    ${fireHoursFilter === h
+                      ? 'border-orange-400/60 bg-orange-400/15 text-orange-300'
+                      : 'border-green-400/10 text-green-400/30 hover:border-green-400/30 hover:text-green-400/60'}`}>
+                  {h}H
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Aircraft filter */}
           <div className="mt-3 border-t border-green-400/20 pt-3">
-            <div className="text-green-400/40 text-xs tracking-widest mb-2">AIRCRAFT FILTER</div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
+              <span className="text-green-400/50 text-xs tracking-widest">AIRCRAFT FILTER</span>
+            </div>
             {['ALL', 'MILITARY', 'CIVILIAN'].map(f => (
               <button key={f} onClick={() => setAircraftFilter(f)}
                 className={`w-full text-left px-3 py-2 md:py-1.5 text-xs border mb-1 transition-all
@@ -693,24 +839,30 @@ export default function App() {
             ))}
           </div>
 
-          {/* Stats */}
+          {/* Intel summary */}
           <div className="mt-2 border-t border-green-400/20 pt-3 space-y-1">
-            <div className="text-green-400/40 text-xs tracking-widest mb-2">INTEL SUMMARY</div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
+              <span className="text-green-400/50 text-xs tracking-widest">INTEL SUMMARY</span>
+            </div>
             {[
               ['REGION',   REGIONS[activeRegion]?.name || activeRegion],
-              ['DATA SRC', backendConnected ? 'ADS-B/FIRMS' : 'SIMULATED'],
-              ['STATUS',   mapLoaded ? (backendConnected ? '● LIVE' : '● MOCK') : '○ INIT'],
+              ['DATA SRC', dataMode === 'live' ? (backendConnected ? 'ADS-B/FIRMS' : 'OFFLINE') : 'SIMULATED'],
+              ['STATUS',   mapLoaded
+                ? dataMode === 'live'
+                  ? backendConnected ? '● LIVE' : '◌ CONNECTING'
+                  : mockState === 'running' ? '● SIM RUNNING' : '○ SIM IDLE'
+                : '○ INIT'],
             ].map(([k, v]) => (
               <div key={k} className="flex justify-between text-xs">
                 <span className="text-green-400/40">{k}</span>
-                <span className={k === 'STATUS' && backendConnected ? 'text-green-400 animate-pulse' : 'text-green-300'}>{v}</span>
+                <span className={
+                  k === 'STATUS' && dataMode === 'live' && backendConnected ? 'text-green-400 animate-pulse' :
+                  k === 'STATUS' && dataMode === 'mock' && mockState === 'running' ? 'text-blue-400 animate-pulse' :
+                  'text-green-300'
+                }>{v}</span>
               </div>
             ))}
-            {/* Mobile: show time here */}
-            <div className="md:hidden flex justify-between text-xs pt-1">
-              <span className="text-green-400/40">UTC</span>
-              <span className="text-green-300">{currentTime.toUTCString().slice(17, 25)}</span>
-            </div>
           </div>
         </aside>
 
@@ -726,11 +878,17 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── BOTTOM ── */}
-      <footer className="h-6 bg-zinc-900/80 border-t border-green-400/20 flex items-center justify-center z-20 shrink-0">
-        <span className="text-green-400/25 text-[10px] md:text-xs tracking-widest text-center px-2">
-          ⚠ SIMULATED DATA ONLY // NOT FOR OPERATIONAL USE // SENTINEL v0.2
+      {/* ── BOTTOM STATUS BAR ── */}
+      <footer className="h-8 bg-zinc-900/80 border-t border-green-400/20 flex items-center justify-between px-3 md:px-4 z-20 shrink-0 text-[10px] text-green-400/40 tracking-widest tabular-nums">
+        <span className="font-mono">
+          {cursorCoords
+            ? `${cursorCoords[1].toFixed(3)}°N  ${cursorCoords[0].toFixed(3)}°E`
+            : '-- --'}
         </span>
+        <span className="hidden md:block">
+          MESAFE v0.3 // {dataMode === 'live' ? (backendConnected ? 'LIVE' : 'CONNECTING') : mockState === 'running' ? 'SIM RUNNING' : 'SIM IDLE'}
+        </span>
+        <span>✈ {counts.aircraft}  🔥 {counts.fires}</span>
       </footer>
     </div>
   )
