@@ -959,23 +959,13 @@ io.on('connection', (socket) => {
     })()
 
     ;(async () => {
-      let ac = loadAircraftCache()
-      if (ac.length === 0) {
-        log('OpenSky', 'No aircraft cache — fetching for data:init…')
-        await fetchAircraft()
-        ac = loadAircraftCache()
-      }
+      const ac = loadAircraftCache()
       socket.emit('aircraft:update', ac)
       log('Socket', `aircraft:update → ${ac.length} ac → ${socket.id}`)
     })()
 
     ;(async () => {
-      let fires = loadFiresCache()
-      if (fires.length === 0) {
-        log('FIRMS', 'No fires cache — fetching for data:init…')
-        await fetchFIRMS()
-        fires = loadFiresCache()
-      }
+      const fires = loadFiresCache()
       socket.emit('fires:update', fires)
       log('Socket', `fires:update → ${fires.length} fires → ${socket.id}`)
     })()
@@ -997,14 +987,16 @@ server.listen(PORT, async () => {
 
   initFirestore()
 
-  // Initial data fetch — all three on startup
-  await Promise.all([fetchAirports(), fetchAircraft(), fetchFIRMS()])
-
-  // Scheduled intervals (configurable via .env, defaults: aircraft 100s, fires 300s)
+  // Register intervals immediately — do not block on startup fetch
   const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 100_000
   const firesInterval    = parseInt(process.env.FIRMS_INTERVAL_MS)    || 300_000
   setInterval(fetchAircraft, aircraftInterval)
   setInterval(fetchFIRMS,    firesInterval)
   log('Socket', `Intervals — aircraft: ${aircraftInterval}ms  fires: ${firesInterval}ms`)
+
+  // Initial fetch runs in background — server is ready to serve from cache immediately
+  fetchAirports().catch(err => log('Airports', `Startup fetch failed: ${err.message}`, 'error'))
+  fetchAircraft().catch(err => log('OpenSky',  `Startup fetch failed: ${err.message}`, 'error'))
+  fetchFIRMS().catch(err    => log('FIRMS',    `Startup fetch failed: ${err.message}`, 'error'))
 
 })
