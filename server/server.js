@@ -177,6 +177,109 @@ async function fetchAirports() {
 
 const ADSBLOL_URL = 'https://api.adsb.lol/v2/lat/32/lon/44.5/dist/1500'
 
+// ICAO Doc 7910 registration prefix → country name (longest prefix matched first)
+const REG_PREFIX_COUNTRY = {
+  // 3-char
+  'A9C': 'Bahrain',
+  // 2-char
+  '4K': 'Azerbaijan',
+  '4L': 'Georgia',
+  '4R': 'Sri Lanka',
+  '4W': 'Yemen',
+  '4X': 'Israel',
+  '5A': 'Libya',
+  '5B': 'Cyprus',
+  '5H': 'Tanzania',
+  '5N': 'Nigeria',
+  '5Y': 'Kenya',
+  '6V': 'Senegal', '6W': 'Senegal',
+  '7T': 'Algeria',
+  '9K': 'Kuwait',
+  '9M': 'Malaysia',
+  '9V': 'Singapore',
+  'A6': 'United Arab Emirates',
+  'A7': 'Qatar',
+  'AP': 'Pakistan',
+  'D2': 'Angola',
+  'D4': 'Cape Verde',
+  'D6': 'Comoros',
+  'EP': 'Iran, Islamic Republic of',
+  'ER': 'Moldova',
+  'ES': 'Estonia',
+  'ET': 'Ethiopia',
+  'EW': 'Belarus',
+  'EX': 'Kyrgyzstan',
+  'EY': 'Tajikistan',
+  'EZ': 'Turkmenistan',
+  'HA': 'Hungary',
+  'HB': 'Switzerland',
+  'HK': 'Colombia',
+  'HL': 'Korea, Republic of',
+  'HZ': 'Saudi Arabia',
+  'J2': 'Djibouti',
+  'JA': 'Japan',
+  'JY': 'Jordan',
+  'LN': 'Norway',
+  'LX': 'Luxembourg',
+  'LY': 'Lithuania',
+  'LZ': 'Bulgaria',
+  'OD': 'Lebanon',
+  'OE': 'Austria',
+  'OH': 'Finland',
+  'OK': 'Czech Republic',
+  'OO': 'Belgium',
+  'OY': 'Denmark',
+  'PH': 'Netherlands',
+  'PK': 'Indonesia',
+  'RA': 'Russia', 'RF': 'Russia',
+  'S2': 'Bangladesh',
+  'S5': 'Slovenia',
+  'SE': 'Sweden',
+  'SP': 'Poland',
+  'SU': 'Egypt',
+  'SX': 'Greece',
+  'TC': 'Turkey',
+  'TF': 'Iceland',
+  'TJ': 'Cameroon',
+  'TN': 'Congo',
+  'TS': 'Tunisia',
+  'UK': 'Uzbekistan',
+  'UN': 'Kazakhstan',
+  'UR': 'Ukraine',
+  'VH': 'Australia',
+  'VN': 'Viet Nam',
+  'VP': 'United Kingdom',
+  'VT': 'India',
+  'XA': 'Mexico', 'XB': 'Mexico', 'XC': 'Mexico',
+  'YA': 'Afghanistan',
+  'YI': 'Iraq',
+  'YK': 'Syrian Arab Republic',
+  'YL': 'Latvia',
+  'YR': 'Romania',
+  'Z3': 'North Macedonia',
+  'ZA': 'Albania',
+  'ZK': 'New Zealand',
+  'ZS': 'South Africa',
+  // 1-char
+  'B': 'China',
+  'C': 'Canada',
+  'D': 'Germany',
+  'F': 'France',
+  'G': 'United Kingdom',
+  'I': 'Italy',
+  'N': 'United States',
+}
+
+function regToCountry(reg) {
+  if (!reg) return ''
+  const r = reg.trim().toUpperCase()
+  const c3 = REG_PREFIX_COUNTRY[r.slice(0, 3)]
+  if (c3) return c3
+  const c2 = REG_PREFIX_COUNTRY[r.slice(0, 2)]
+  if (c2) return c2
+  return REG_PREFIX_COUNTRY[r.slice(0, 1)] || ''
+}
+
 // Middle East bounding box filter (same as OpenSky)
 const ME_BBOX = { latMin: 22, latMax: 42, lonMin: 29, lonMax: 60 }
 
@@ -207,7 +310,7 @@ function parseADSBLol(ac) {
     origin:         null,
     destination:    null,
     route:          null,
-    originCountry:  ac.ownOp || '',
+    originCountry:  regToCountry(ac.r) || ac.ownOp || '',
     squawk:         ac.squawk || '',
     positionSource: 'ADS-B',
   }
@@ -794,9 +897,12 @@ server.listen(PORT, async () => {
   // Initial data fetch
   await Promise.all([fetchAircraft(), fetchFIRMS(), fetchAirports()])
 
-  // Scheduled intervals
-  setInterval(fetchAircraft, 22_000)   // Every 22s (4000 req/day limit)
-  setInterval(fetchFIRMS, 10_000)      // Every 10s (FIRMS limit: 5000/10min)
+  // Scheduled intervals (configurable via .env, defaults: aircraft 22s, fires 300s)
+  const aircraftInterval = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 22_000
+  const firesInterval    = parseInt(process.env.FIRMS_INTERVAL_MS)    || 300_000
+  setInterval(fetchAircraft, aircraftInterval)
+  setInterval(fetchFIRMS,    firesInterval)
+  log('FIRMS', `Intervals — aircraft: ${aircraftInterval}ms  fires: ${firesInterval}ms`)
   setInterval(async () => {            // Retry airports if initial fetch failed
     if (airportData.length === 0) await fetchAirports()
   }, 60_000)
