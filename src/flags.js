@@ -16,5 +16,3 @@ export function preloadAllFlags(map) {
   })
 }
 
-// No-op kept for call sites — flags are preloaded at map init.
-export function ensureAircraftLabels(_aircraft, _map) {}

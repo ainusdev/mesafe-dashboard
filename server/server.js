@@ -4,10 +4,13 @@ const http    = require('http')
 const { Server } = require('socket.io')
 const cors   = require('cors')
 const axios  = require('axios')
+const fs     = require('fs')
+const path   = require('path')
 
 const { log }                                     = require('./lib/logger')
 const { loadAircraftCache, loadFiresCache, loadAirportsCache,
-        saveAircraftCache, saveFiresCache, saveAirportsCache } = require('./lib/cache')
+        saveAircraftCache, saveFiresCache, saveAirportsCache,
+        latestCacheFile } = require('./lib/cache')
 const { initFirestore, migrateFireHotspotsToSnapshots,
         saveAircraftToFirestore, saveFiresToFirestore, saveAirportsToFirestore,
         loadAircraftFromFirestore, loadFiresFromFirestore, loadAirportsFromFirestore,
@@ -45,8 +48,9 @@ let fireData     = loadFiresCache()
 let airportData  = loadAirportsCache()
 
 ;(async () => {
-  // 구 포맷 마이그레이션 (fire_hotspots → fire_snapshots, 1회)
-  await migrateFireHotspotsToSnapshots()
+  // 구 포맷 마이그레이션 — 복구를 블로킹하지 않도록 백그라운드 실행
+  migrateFireHotspotsToSnapshots().catch(err =>
+    log('Firestore', `Migration error: ${err.message}`, 'warn'))
 
   // CSV가 비어있는 항목만 Firestore에서 복구
   const needAircraft = aircraftData.length === 0
@@ -158,24 +162,80 @@ app.get('/api/flights', async (req, res) => {
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 
+// Guard against concurrent on-demand fetches from multiple clients
+const fetchLock = { aircraft: false, fires: false, airports: false }
+
 io.on('connection', (socket) => {
   log('Socket', `Client connected: ${socket.id}`)
 
   socket.on('data:init', () => {
     ;(async () => {
-      if (airportData.length === 0) {
-        log('Airports', 'No cache — fetching…')
-        airportData = await fetchAirports()
+      // ── Airports ──
+      const airportsCsv = path.join(__dirname, 'cache/airports.csv')
+      if (airportData.length === 0 || !fs.existsSync(airportsCsv)) {
+        if (!fetchLock.airports) {
+          fetchLock.airports = true
+          try {
+            log('Airports', airportData.length === 0 ? 'No cache — fetching…' : 'CSV missing — re-fetching…')
+            const fetched = await fetchAirports()
+            if (fetched.length > 0) airportData = fetched
+          } catch (err) {
+            log('Airports', `On-demand fetch error: ${err.message}`, 'error')
+          } finally {
+            fetchLock.airports = false
+          }
+        }
       }
       socket.emit('airports:update', airportData)
       log('Socket', `airports:update → ${airportData.length} ap → ${socket.id}`)
+
+      // ── Aircraft ──
+      if (aircraftData.length === 0 || !latestCacheFile('aircraft')) {
+        if (!fetchLock.aircraft) {
+          fetchLock.aircraft = true
+          try {
+            log('OpenSky', aircraftData.length === 0 ? 'No cache — fetching…' : 'CSV missing — re-fetching…')
+            const fetched = await fetchAircraft()
+            if (fetched.length > 0) {
+              aircraftData = fetched
+              saveAircraftCache(fetched)
+              io.emit('aircraft:update', aircraftData)
+              log('Socket', `aircraft:update (on demand) → ${aircraftData.length} ac`)
+            }
+          } catch (err) {
+            log('OpenSky', `On-demand fetch error: ${err.message}`, 'error')
+          } finally {
+            fetchLock.aircraft = false
+          }
+        }
+      }
+      // Always emit current data to requesting client
+      socket.emit('aircraft:update', aircraftData)
+      log('Socket', `aircraft:update → ${aircraftData.length} ac → ${socket.id}`)
+
+      // ── Fires ──
+      if (fireData.length === 0 || !latestCacheFile('fires')) {
+        if (!fetchLock.fires) {
+          fetchLock.fires = true
+          try {
+            log('FIRMS', fireData.length === 0 ? 'No cache — fetching…' : 'CSV missing — re-fetching…')
+            const fetched = await fetchFIRMS()
+            if (fetched.length > 0) {
+              fireData = fetched
+              io.emit('fires:update', fireData)
+              log('Socket', `fires:update (on demand) → ${fireData.length} fires`)
+            }
+          } catch (err) {
+            log('FIRMS', `On-demand fetch error: ${err.message}`, 'error')
+          } finally {
+            fetchLock.fires = false
+          }
+        }
+      }
+      // Always emit current data to requesting client
+      socket.emit('fires:update', fireData)
+      log('Socket', `fires:update → ${fireData.length} fires → ${socket.id}`)
     })()
-
-    socket.emit('aircraft:update', aircraftData)
-    log('Socket', `aircraft:update → ${aircraftData.length} ac → ${socket.id}`)
-
-    socket.emit('fires:update', fireData)
-    log('Socket', `fires:update → ${fireData.length} fires → ${socket.id}`)
   })
 
   socket.on('disconnect', () => {

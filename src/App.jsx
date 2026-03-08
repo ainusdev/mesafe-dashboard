@@ -5,7 +5,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 
 import { MAPBOX_TOKEN, BACKEND_URL, REGIONS, REGION_TZ, REGION_CODE } from './constants.js'
 import { formatTZ } from './utils.js'
-import { preloadAllFlags, ensureAircraftLabels } from './flags.js'
+import { preloadAllFlags } from './flags.js'
 import { makeCivilianSVG, makeMilitarySVG, makeUnknownSVG } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
 import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires } from './data.js'
@@ -50,8 +50,6 @@ export default function App() {
   const animFrameRef = useRef(null)
   const animCurrentRef = useRef({})
   const animToRef = useRef([])
-  const liveIntervalMsRef = useRef(100000)
-  const lastAircraftUpdateRef = useRef(null)
   const pendingAirportsRef = useRef(null)
 
   useEffect(() => { activeRegionRef.current = activeRegion }, [activeRegion])
@@ -63,15 +61,29 @@ export default function App() {
 
   // ── Stable helpers ────────────────────────────────────────────────────────
 
-  const updateSources = useCallback(() => {
+  const applyFireFilter = useCallback((hours) => {
+    const h = hours ?? fireHoursFilterRef.current
+    // Update count
+    const filteredFires = getFilteredFires(fireDataRef.current, h)
+    setCounts(prev => ({ ...prev, fires: filteredFires.length }))
+    // Apply Mapbox layer filter — GPU-side, instant visual response
+    const map = mapInstanceRef.current
+    if (!map) return
+    const cutoff = Date.now() - h * 3600 * 1000
+    const filter = ['>=', ['get', 'acqTimestamp'], cutoff]
+    for (const id of ['fire-heat-layer', 'fire-circle-layer', 'fire-click-layer']) {
+      if (map.getLayer(id)) map.setFilter(id, filter)
+    }
+  }, [])
+
+  const updateAircraftFilter = useCallback(() => {
+    const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
+    setCounts(prev => ({ ...prev, aircraft: filtered.length }))
+    // In live mode, animation loop handles aircraft-source rendering
+    if (dataModeRef.current === 'live') return
     const map = mapInstanceRef.current
     if (!map?.isStyleLoaded()) return
-    const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
-    const filteredFires = getFilteredFires(fireDataRef.current, fireHoursFilterRef.current)
-    ensureAircraftLabels(filtered, map)
     map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
-    map.getSource('fire-source')?.setData(toGeoJSONFires(filteredFires))
-    setCounts({ aircraft: filtered.length, fires: filteredFires.length })
   }, [])
 
   const applyAirports = useCallback((data, map) => {
@@ -126,215 +138,233 @@ export default function App() {
     map.on('mousemove', e => setCursorCoords([e.lngLat.lng, e.lngLat.lat]))
 
     map.on('load', () => {
-      const loadIcon = (name, svgFn, color) =>
-        new Promise(resolve => {
-          const img = new Image()
-          img.onload = () => { if (!map.hasImage(name)) map.addImage(name, img); resolve() }
-          img.src = svgFn(color)
-        })
+      // ── Popup ──
+      const popup = new mapboxgl.Popup({ className: 'military-popup', closeButton: true, maxWidth: '300px' })
+      popupRef.current = popup
 
-      Promise.all([
-        loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80'),
-        loadIcon('aircraft-military', makeMilitarySVG, '#ef4444'),
-        loadIcon('aircraft-unknown',  makeUnknownSVG,  '#f59e0b'),
-      ]).then(() => {
-        // ── Aircraft ──
-        map.addSource('aircraft-source', {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [] },
+      const bindPopup = (layerId, builder) => {
+        map.on('click', layerId, e => {
+          if (!e.features.length) return
+          const { properties, geometry } = e.features[0]
+          popup.setLngLat(geometry.coordinates.slice()).setHTML(builder(properties)).addTo(map)
         })
-        map.addLayer({
-          id: 'aircraft-layer',
-          type: 'symbol',
-          source: 'aircraft-source',
-          layout: {
-            'icon-image': ['match', ['get', 'militaryStatus'],
-              'military',  'aircraft-military',
-              'suspected', 'aircraft-unknown',
-              'aircraft-civilian',
-            ],
-            'icon-size': 1,
-            'icon-rotate': ['get', 'heading'],
-            'icon-rotation-alignment': 'map',
-            'icon-allow-overlap': true,
-            'text-field': ['get', 'callsign'],
-            'text-font': ['literal', ['DIN Offc Pro Regular', 'Arial Unicode MS Regular']],
-            'text-size': 10,
-            'text-anchor': 'top',
-            'text-offset': [0, 1.3],
-            'text-allow-overlap': false,
-            'text-optional': true,
-          },
-          paint: {
-            'text-color': ['match', ['get', 'militaryStatus'],
-              'military',  '#ef4444',
-              'suspected', '#f59e0b',
-              '#4ade80',
-            ],
-            'text-halo-color': 'rgba(0,0,0,0.85)',
-            'text-halo-width': 1,
-          },
-        })
+        map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer' })
+        map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = '' })
+      }
 
-        map.addLayer({
-          id: 'flag-layer',
-          type: 'symbol',
-          source: 'aircraft-source',
-          filter: ['!=', ['get', 'flagKey'], ''],
-          layout: {
-            'icon-image': ['get', 'flagKey'],
-            'icon-anchor': 'bottom',
-            'icon-offset': [0, -20],
-            'icon-allow-overlap': true,
-            'icon-ignore-placement': true,
-          },
-        })
-
-        // ── Fires ──
-        map.addSource('fire-source', {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [] },
-        })
-        map.addLayer({
-          id: 'fire-heat-layer',
-          type: 'heatmap',
-          source: 'fire-source',
-          paint: {
-            'heatmap-weight': ['interpolate', ['linear'], ['to-number', ['get', 'brightness'], 0], 0, 0.4, 1, 1],
-            'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 4, 1, 8, 3, 12, 5],
-            'heatmap-color': [
-              'interpolate', ['linear'], ['heatmap-density'],
-              0,    'rgba(0,0,0,0)',
-              0.1,  'rgba(255,165,0,0.2)',
-              0.35, 'rgba(255,80,0,0.6)',
-              0.65, 'rgba(255,20,0,0.85)',
-              0.85, 'rgba(255,0,0,0.95)',
-              1,    'rgba(255,240,180,1)',
-            ],
-            'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 4, 15, 8, 30, 12, 50],
-            'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.85, 12, 0.25],
-          },
-        })
-        map.addLayer({
-          id: 'fire-circle-layer',
-          type: 'circle',
-          source: 'fire-source',
-          minzoom: 9,
-          paint: {
-            'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 4, 12, 8],
-            'circle-color': [
-              'step', ['to-number', ['get', 'brightness'], 0],
-              '#fbbf24',
-              0.4, '#f97316',
-              0.7, '#ef4444',
-            ],
-            'circle-opacity': 0.95,
-            'circle-stroke-width': 1.5,
-            'circle-stroke-color': 'rgba(255,140,0,0.7)',
-          },
-        })
-
-        // ── Airports ──
-        map.addSource('airport-source', {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [] },
-        })
-        map.addLayer({
-          id: 'airport-circle-layer',
-          type: 'circle',
-          source: 'airport-source',
-          filter: ['==', ['get', 'type'], 'large_airport'],
-          paint: {
-            'circle-radius': 6,
-            'circle-color': '#60a5fa',
-            'circle-opacity': 0.9,
-            'circle-stroke-width': 1,
-            'circle-stroke-color': 'rgba(0,0,0,0.6)',
-          },
-        })
-        map.addLayer({
-          id: 'airport-label-layer',
-          type: 'symbol',
-          source: 'airport-source',
-          filter: ['==', ['get', 'type'], 'large_airport'],
-          minzoom: 6,
-          layout: {
-            'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
-            'text-size': 10,
-            'text-offset': [0, 1.2],
-            'text-anchor': 'top',
-            'text-optional': true,
-            'text-allow-overlap': false,
-          },
-          paint: {
-            'text-color': '#60a5fa',
-            'text-halo-color': 'rgba(0,0,0,0.9)',
-            'text-halo-width': 1,
-          },
-        })
-        map.addLayer({
-          id: 'airport-other-circle-layer',
-          type: 'circle',
-          source: 'airport-source',
-          filter: ['!=', ['get', 'type'], 'large_airport'],
-          layout: { visibility: 'none' },
-          paint: {
-            'circle-radius': ['match', ['get', 'type'], 'medium_airport', 4, 3],
-            'circle-color': ['match', ['get', 'type'], 'medium_airport', '#94a3b8', '#475569'],
-            'circle-opacity': 0.8,
-            'circle-stroke-width': 1,
-            'circle-stroke-color': 'rgba(0,0,0,0.6)',
-          },
-        })
-        map.addLayer({
-          id: 'airport-other-label-layer',
-          type: 'symbol',
-          source: 'airport-source',
-          filter: ['!=', ['get', 'type'], 'large_airport'],
-          minzoom: 8,
-          layout: {
-            visibility: 'none',
-            'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
-            'text-size': 9,
-            'text-offset': [0, 1.1],
-            'text-anchor': 'top',
-            'text-optional': true,
-            'text-allow-overlap': false,
-          },
-          paint: {
-            'text-color': '#64748b',
-            'text-halo-color': 'rgba(0,0,0,0.9)',
-            'text-halo-width': 1,
-          },
-        })
-
-        // ── Popups ──
-        const popup = new mapboxgl.Popup({ className: 'military-popup', closeButton: true, maxWidth: '300px' })
-        popupRef.current = popup
-
-        const bindPopup = (layerId, builder) => {
-          map.on('click', layerId, e => {
-            if (!e.features.length) return
-            const { properties, geometry } = e.features[0]
-            popup.setLngLat(geometry.coordinates.slice()).setHTML(builder(properties)).addTo(map)
-          })
-          map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer' })
-          map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = '' })
-        }
-
-        bindPopup('aircraft-layer', buildAircraftPopupHTML)
-        bindPopup('fire-circle-layer', buildFirePopupHTML)
-        bindPopup('airport-circle-layer', buildAirportPopupHTML)
-        bindPopup('airport-other-circle-layer', buildAirportPopupHTML)
-
-        setMapLoaded(true)
-        preloadAllFlags(map)
-
-        if (pendingAirportsRef.current) {
-          applyAirports(pendingAirportsRef.current, map)
-          pendingAirportsRef.current = null
-        }
+      // ── Fires (no icons needed — add immediately) ──
+      map.addSource('fire-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
       })
+      map.addLayer({
+        id: 'fire-heat-layer',
+        type: 'heatmap',
+        source: 'fire-source',
+        paint: {
+          'heatmap-weight': ['interpolate', ['linear'], ['to-number', ['get', 'brightness'], 0], 0, 0.4, 1, 1],
+          'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 4, 1, 8, 3, 12, 5],
+          'heatmap-color': [
+            'interpolate', ['linear'], ['heatmap-density'],
+            0,    'rgba(0,0,0,0)',
+            0.1,  'rgba(255,165,0,0.2)',
+            0.35, 'rgba(255,80,0,0.6)',
+            0.65, 'rgba(255,20,0,0.85)',
+            0.85, 'rgba(255,0,0,0.95)',
+            1,    'rgba(255,240,180,1)',
+          ],
+          'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 4, 15, 8, 30, 12, 50],
+          'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.85, 12, 0.25],
+        },
+      })
+      map.addLayer({
+        id: 'fire-circle-layer',
+        type: 'circle',
+        source: 'fire-source',
+        minzoom: 9,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 4, 12, 8],
+          'circle-color': [
+            'step', ['to-number', ['get', 'brightness'], 0],
+            '#fbbf24',
+            0.4, '#f97316',
+            0.7, '#ef4444',
+          ],
+          'circle-opacity': 0.95,
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': 'rgba(255,140,0,0.7)',
+        },
+      })
+      // Invisible click-detection layer — no minzoom, works at all zoom levels
+      map.addLayer({
+        id: 'fire-click-layer',
+        type: 'circle',
+        source: 'fire-source',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 6, 9, 10],
+          'circle-opacity': 0,
+          'circle-stroke-width': 0,
+        },
+      })
+      bindPopup('fire-click-layer', buildFirePopupHTML)
+
+      // ── Airports (no icons needed — add immediately) ──
+      map.addSource('airport-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: 'airport-circle-layer',
+        type: 'circle',
+        source: 'airport-source',
+        filter: ['==', ['get', 'type'], 'large_airport'],
+        paint: {
+          'circle-radius': 6,
+          'circle-color': '#60a5fa',
+          'circle-opacity': 0.9,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': 'rgba(0,0,0,0.6)',
+        },
+      })
+      map.addLayer({
+        id: 'airport-label-layer',
+        type: 'symbol',
+        source: 'airport-source',
+        filter: ['==', ['get', 'type'], 'large_airport'],
+        minzoom: 6,
+        layout: {
+          'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
+          'text-size': 10,
+          'text-offset': [0, 1.2],
+          'text-anchor': 'top',
+          'text-optional': true,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#60a5fa',
+          'text-halo-color': 'rgba(0,0,0,0.9)',
+          'text-halo-width': 1,
+        },
+      })
+      map.addLayer({
+        id: 'airport-other-circle-layer',
+        type: 'circle',
+        source: 'airport-source',
+        filter: ['!=', ['get', 'type'], 'large_airport'],
+        layout: { visibility: 'none' },
+        paint: {
+          'circle-radius': ['match', ['get', 'type'], 'medium_airport', 4, 3],
+          'circle-color': ['match', ['get', 'type'], 'medium_airport', '#94a3b8', '#475569'],
+          'circle-opacity': 0.8,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': 'rgba(0,0,0,0.6)',
+        },
+      })
+      map.addLayer({
+        id: 'airport-other-label-layer',
+        type: 'symbol',
+        source: 'airport-source',
+        filter: ['!=', ['get', 'type'], 'large_airport'],
+        minzoom: 8,
+        layout: {
+          visibility: 'none',
+          'text-field': ['coalesce', ['get', 'iata'], ['get', 'icao']],
+          'text-size': 9,
+          'text-offset': [0, 1.1],
+          'text-anchor': 'top',
+          'text-optional': true,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#64748b',
+          'text-halo-color': 'rgba(0,0,0,0.9)',
+          'text-halo-width': 1,
+        },
+      })
+      bindPopup('airport-circle-layer', buildAirportPopupHTML)
+      bindPopup('airport-other-circle-layer', buildAirportPopupHTML)
+
+      if (pendingAirportsRef.current) {
+        applyAirports(pendingAirportsRef.current, map)
+        pendingAirportsRef.current = null
+      }
+
+      // ── Aircraft (add source/layer immediately; icons load async) ──
+      map.addSource('aircraft-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+      map.addLayer({
+        id: 'aircraft-layer',
+        type: 'symbol',
+        source: 'aircraft-source',
+        layout: {
+          'icon-image': ['match', ['get', 'militaryStatus'],
+            'military',  'aircraft-military',
+            'suspected', 'aircraft-unknown',
+            'aircraft-civilian',
+          ],
+          'icon-size': 1,
+          'icon-rotate': ['get', 'heading'],
+          'icon-rotation-alignment': 'map',
+          'icon-allow-overlap': true,
+          'text-field': ['get', 'callsign'],
+          'text-font': ['literal', ['DIN Offc Pro Regular', 'Arial Unicode MS Regular']],
+          'text-size': 10,
+          'text-anchor': 'top',
+          'text-offset': [0, 1.3],
+          'text-allow-overlap': false,
+          'text-optional': true,
+        },
+        paint: {
+          'text-color': ['match', ['get', 'militaryStatus'],
+            'military',  '#ef4444',
+            'suspected', '#f59e0b',
+            '#4ade80',
+          ],
+          'text-halo-color': 'rgba(0,0,0,0.85)',
+          'text-halo-width': 1,
+        },
+      })
+      map.addLayer({
+        id: 'flag-layer',
+        type: 'symbol',
+        source: 'aircraft-source',
+        filter: ['!=', ['get', 'flagKey'], ''],
+        layout: {
+          'icon-image': ['get', 'flagKey'],
+          'icon-anchor': 'bottom',
+          'icon-offset': [0, -20],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      })
+      bindPopup('aircraft-layer', buildAircraftPopupHTML)
+
+      // Icons load async — Mapbox auto-applies once added
+      const loadIcon = (name, svgFn, color) => {
+        const img = new Image()
+        img.onload = () => { if (!map.hasImage(name)) map.addImage(name, img) }
+        img.onerror = () => { console.warn(`[Map] Failed to load icon: ${name}`) }
+        img.src = svgFn(color)
+      }
+      loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80')
+      loadIcon('aircraft-military', makeMilitarySVG, '#ef4444')
+      loadIcon('aircraft-unknown',  makeUnknownSVG,  '#f59e0b')
+
+      // Apply any data already received before map loaded
+      if (fireDataRef.current.length > 0) {
+        map.getSource('fire-source').setData(toGeoJSONFires(fireDataRef.current))
+      }
+      // Apply initial fire time filter
+      const cutoff = Date.now() - fireHoursFilterRef.current * 3600 * 1000
+      const initFilter = ['>=', ['get', 'acqTimestamp'], cutoff]
+      for (const id of ['fire-heat-layer', 'fire-circle-layer', 'fire-click-layer']) {
+        if (map.getLayer(id)) map.setFilter(id, initFilter)
+      }
+
+      setMapLoaded(true)
+      preloadAllFlags(map)
     })
 
     return () => {
@@ -370,16 +400,14 @@ export default function App() {
     socket.on('aircraft:update', (data) => {
       if (dataModeRef.current !== 'live') return
       aircraftDataRef.current = data
-      const now = performance.now()
-      if (lastAircraftUpdateRef.current) {
-        const measured = now - lastAircraftUpdateRef.current
-        if (measured > 5000 && measured < 300000)
-          liveIntervalMsRef.current = liveIntervalMsRef.current * 0.7 + measured * 0.3
-      }
-      lastAircraftUpdateRef.current = now
-      const map = mapInstanceRef.current
-      ensureAircraftLabels(data, map)
       setCounts(prev => ({ ...prev, aircraft: getFilteredAircraft(data, aircraftFilterRef.current).length }))
+
+      // Prune stale entries from animation state
+      const activeIds = new Set(data.map(ac => ac.id))
+      for (const id of Object.keys(animCurrentRef.current)) {
+        if (!activeIds.has(id)) delete animCurrentRef.current[id]
+      }
+
       data.forEach(ac => {
         if (!animCurrentRef.current[ac.id]) {
           animCurrentRef.current[ac.id] = {
@@ -391,17 +419,17 @@ export default function App() {
         }
       })
       animToRef.current = data
-      startAnimLoop(map)
+      startAnimLoop(mapInstanceRef.current)
     })
 
     socket.on('fires:update', (data) => {
       if (dataModeRef.current !== 'live' || data.length === 0) return
       fireDataRef.current = data
       const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) return
-      const filtered = getFilteredFires(data, fireHoursFilterRef.current)
-      map.getSource('fire-source')?.setData(toGeoJSONFires(filtered))
-      setCounts(prev => ({ ...prev, fires: filtered.length }))
+      if (map?.getSource('fire-source')) {
+        map.getSource('fire-source').setData(toGeoJSONFires(data))
+      }
+      applyFireFilter()
     })
 
     socket.on('airports:update', (data) => {
@@ -430,9 +458,14 @@ export default function App() {
     if (dataModeRef.current === 'mock' && mockStateRef.current === 'running') {
       aircraftDataRef.current = generateAircraft(region.center)
       fireDataRef.current = generateFires(region.center)
-      updateSources()
+      applyFireFilter()
+      updateAircraftFilter()
+      if (map.isStyleLoaded()) {
+        const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
+        map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
+      }
     }
-  }, [activeRegion, mapLoaded, updateSources])
+  }, [activeRegion, mapLoaded, applyFireFilter, updateAircraftFilter])
 
   // ── Mock CSV download ─────────────────────────────────────────────────────
   function downloadMockCSV(aircraft) {
@@ -560,6 +593,10 @@ export default function App() {
     setMockState('stopped')
     clearMapData()
     setDataMode(mode)
+    // Re-request live data when switching back
+    if (mode === 'live' && socketRef.current?.connected) {
+      socketRef.current.emit('data:init')
+    }
   }
 
   function mockStart() {
@@ -574,9 +611,16 @@ export default function App() {
       animCurrentRef.current[ac.id] = { lat: ac.lat, lon: ac.lon, heading: ac.heading, headingRate: 0, currentSpeed: 0 }
     })
     animToRef.current = aircraftDataRef.current
-    updateSources()
     const mockMap = mapInstanceRef.current
-    ensureAircraftLabels(aircraftDataRef.current, mockMap)
+    if (mockMap?.getSource('fire-source')) {
+      mockMap.getSource('fire-source').setData(toGeoJSONFires(fireDataRef.current))
+    }
+    applyFireFilter()
+    updateAircraftFilter()
+    if (mockMap?.isStyleLoaded()) {
+      const filtered = getFilteredAircraft(aircraftDataRef.current, aircraftFilterRef.current)
+      mockMap.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
+    }
     startAnimLoop(mockMap)
     clearInterval(mockIntervalRef.current)
     mockIntervalRef.current = setInterval(() => {
@@ -585,9 +629,9 @@ export default function App() {
       fireDataRef.current = tickFires(fireDataRef.current, c)
       animToRef.current = aircraftDataRef.current
       const map = mapInstanceRef.current
-      if (map?.isStyleLoaded()) {
-        const filtered = getFilteredFires(fireDataRef.current, fireHoursFilterRef.current)
-        map.getSource('fire-source')?.setData(toGeoJSONFires(filtered))
+      if (map?.getSource('fire-source')) {
+        map.getSource('fire-source').setData(toGeoJSONFires(fireDataRef.current))
+        applyFireFilter()
       }
     }, 10000)
   }
@@ -610,10 +654,12 @@ export default function App() {
     clearMapData()
   }
 
-  // ── 6. Fire time filter / aircraft filter ────────────────────────────────
+  // ── 6. Fire time filter (no useEffect — called directly from onClick) ──
+
+  // ── 6b. Aircraft filter ────────────────────────────────────────────────
   useEffect(() => {
-    if (mapLoaded) updateSources()
-  }, [fireHoursFilter, aircraftFilter, mapLoaded, updateSources])
+    if (mapLoaded) updateAircraftFilter()
+  }, [aircraftFilter, mapLoaded, updateAircraftFilter])
 
   // ── 7. Layer visibility ───────────────────────────────────────────────────
   useEffect(() => {
@@ -621,7 +667,7 @@ export default function App() {
     if (!map || !mapLoaded) return
     const layerMap = {
       aircraft:     ['aircraft-layer', 'flag-layer'],
-      fires:        ['fire-heat-layer', 'fire-circle-layer'],
+      fires:        ['fire-heat-layer', 'fire-circle-layer', 'fire-click-layer'],
       airports:     ['airport-circle-layer', 'airport-label-layer'],
       airportsOther:['airport-other-circle-layer', 'airport-other-label-layer'],
     }
@@ -824,7 +870,7 @@ export default function App() {
             </div>
             <div className="grid grid-cols-4 gap-1">
               {[1, 6, 12, 24].map(h => (
-                <button key={h} onClick={() => setFireHoursFilter(h)}
+                <button key={h} onClick={() => { fireHoursFilterRef.current = h; setFireHoursFilter(h); applyFireFilter(h) }}
                   className={`py-1.5 text-xs border transition-all tracking-wide
                     ${fireHoursFilter === h
                       ? 'border-orange-400/60 bg-orange-400/15 text-orange-300'
