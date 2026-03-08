@@ -9,7 +9,7 @@ import { preloadAllFlags } from './flags.js'
 import { makeCivilianSVG, makeMilitarySVG, makeUnknownSVG } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
 import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires } from './data.js'
-import { buildAircraftPopupHTML, buildFirePopupHTML, buildAirportPopupHTML } from './popups.js'
+import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML } from './popups.js'
 
 // ─── App ───────────────────────────────────────────────────────────────────
 
@@ -183,16 +183,35 @@ export default function App() {
         source: 'fire-source',
         minzoom: 9,
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 4, 12, 8],
-          'circle-color': [
-            'step', ['to-number', ['get', 'brightness'], 0],
-            '#fbbf24',
-            0.4, '#f97316',
-            0.7, '#ef4444',
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            9,  ['interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
+                  0, 3,  10, 5,  50, 8,  100, 12],
+            14, ['interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
+                  0, 5,  10, 9,  50, 14, 100, 20],
           ],
-          'circle-opacity': 0.95,
-          'circle-stroke-width': 1.5,
-          'circle-stroke-color': 'rgba(255,140,0,0.7)',
+          'circle-color': [
+            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
+            0,   '#3b82f6',
+            5,   '#fbbf24',
+            20,  '#f97316',
+            50,  '#ef4444',
+            100, '#dc2626',
+          ],
+          'circle-opacity': [
+            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
+            0, 0.6,  10, 0.8,  50, 0.95,
+          ],
+          'circle-stroke-width': [
+            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
+            0, 1,  50, 2,  100, 3,
+          ],
+          'circle-stroke-color': [
+            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
+            0,  'rgba(59,130,246,0.4)',
+            10, 'rgba(255,140,0,0.6)',
+            50, 'rgba(239,68,68,0.8)',
+          ],
         },
       })
       // Invisible click-detection layer — no minzoom, works at all zoom levels
@@ -206,7 +225,31 @@ export default function App() {
           'circle-stroke-width': 0,
         },
       })
-      bindPopup('fire-click-layer', buildFirePopupHTML)
+      // Fire click — query nearby features for cluster summary
+      map.on('click', 'fire-click-layer', e => {
+        if (!e.features.length) return
+        const clicked = e.features[0]
+        const point = e.point
+        // Query all fire features near the click point (20px radius)
+        const nearby = map.queryRenderedFeatures(
+          [[point.x - 20, point.y - 20], [point.x + 20, point.y + 20]],
+          { layers: ['fire-click-layer'] },
+        )
+        // Deduplicate by id
+        const seen = new Set()
+        const unique = nearby.filter(f => {
+          const id = f.properties.id
+          if (seen.has(id)) return false
+          seen.add(id)
+          return true
+        })
+        const html = unique.length > 1
+          ? buildFireClusterPopupHTML(clicked.properties, unique.map(f => f.properties))
+          : buildFirePopupHTML(clicked.properties)
+        popup.setLngLat(clicked.geometry.coordinates.slice()).setHTML(html).addTo(map)
+      })
+      map.on('mouseenter', 'fire-click-layer', () => { map.getCanvas().style.cursor = 'pointer' })
+      map.on('mouseleave', 'fire-click-layer', () => { map.getCanvas().style.cursor = '' })
 
       // ── Airports (no icons needed — add immediately) ──
       map.addSource('airport-source', {

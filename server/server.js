@@ -10,7 +10,8 @@ const path   = require('path')
 const { log }                                     = require('./lib/logger')
 const { loadAircraftCache, loadFiresCache, loadAirportsCache,
         saveAircraftCache, saveFiresCache, saveAirportsCache,
-        latestCacheFile } = require('./lib/cache')
+        latestCacheFile,
+        uploadAllCsvToStorage, scheduleHourlyStorageSync } = require('./lib/cache')
 const { initFirestore,
         saveAircraftToFirestore, saveFiresToFirestore, saveAirportsToFirestore,
         loadAircraftFromFirestore, loadFiresFromFirestore, loadAirportsFromFirestore,
@@ -40,6 +41,11 @@ const PORT = process.env.PORT || 3001
 // ─── 1. Firestore 초기화 ──────────────────────────────────────────────────────
 
 initFirestore()
+
+// ─── 1-1. Firebase Storage: 기존 CSV 즉시 업로드 + 매시 0분 동기화 ──────────
+
+uploadAllCsvToStorage()
+scheduleHourlyStorageSync()
 
 // ─── 2. CSV 로드 → 비어있으면 Firestore에서 복구 (비동기, 비차단) ────────────
 

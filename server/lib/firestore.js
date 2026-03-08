@@ -22,7 +22,11 @@ function initFirestore() {
         credential = admin.credential.applicationDefault()
         log('Firestore', 'Using Application Default Credentials')
       }
-      admin.initializeApp({ credential, projectId: 'conflict-safety-dashboard' })
+      admin.initializeApp({
+        credential,
+        projectId: 'conflict-safety-dashboard',
+        storageBucket: 'conflict-safety-dashboard.firebasestorage.app',
+      })
     }
     db = admin.firestore()
     log('Firestore', 'Connected to conflict-safety-dashboard')

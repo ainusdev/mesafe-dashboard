@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NASA FIRMS 화점 데이터 읽는 법 — MESAFE</title>
+  <meta name="description" content="NASA FIRMS 위성 화점 데이터의 각 필드 의미, 판독 기준, 그리고 군사적 해석 가이드." />
+  <meta name="theme-color" content="#09090b" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #09090b;
+      color: #d4d4d8;
+      font-family: 'Courier New', monospace;
+      line-height: 1.8;
+      padding: 0;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    a { color: #60a5fa; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .back {
+      display: inline-block;
+      margin-bottom: 24px;
+      color: #4ade80;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+    }
+
+    h1 {
+      color: #fbbf24;
+      font-size: 18px;
+      letter-spacing: 0.15em;
+      border-bottom: 1px solid #fbbf2444;
+      padding-bottom: 10px;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      color: #71717a;
+      font-size: 11px;
+      margin-bottom: 32px;
+    }
+
+    h2 {
+      color: #4ade80;
+      font-size: 14px;
+      letter-spacing: 0.1em;
+      margin-top: 36px;
+      margin-bottom: 12px;
+      padding-left: 10px;
+      border-left: 3px solid #4ade8066;
+    }
+    h3 {
+      color: #fbbf24;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      margin-top: 24px;
+      margin-bottom: 8px;
+    }
+
+    p { margin-bottom: 12px; font-size: 13px; }
+    .dim { color: #71717a; }
+    .warn { color: #f87171; }
+    .highlight { color: #fbbf24; }
+    .green { color: #4ade80; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 20px;
+      font-size: 12px;
+    }
+    th {
+      text-align: left;
+      color: #4ade80;
+      padding: 6px 10px;
+      border-bottom: 1px solid #4ade8033;
+      font-weight: normal;
+      letter-spacing: 0.05em;
+    }
+    td {
+      padding: 6px 10px;
+      border-bottom: 1px solid #27272a;
+      vertical-align: top;
+    }
+    td:first-child { color: #e5e7eb; white-space: nowrap; }
+
+    .card {
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 2px;
+      padding: 14px 16px;
+      margin: 12px 0;
+      font-size: 12px;
+    }
+    .card-warn {
+      border-color: #f8717133;
+      background: #1c1111;
+    }
+    .card-fire {
+      border-color: #fbbf2433;
+      background: #1c1a11;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 2px;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+    }
+    .tag-low { background: #60a5fa22; color: #60a5fa; border: 1px solid #60a5fa44; }
+    .tag-med { background: #fbbf2422; color: #fbbf24; border: 1px solid #fbbf2444; }
+    .tag-high { background: #f9731622; color: #f97316; border: 1px solid #f9731644; }
+    .tag-extreme { background: #ef444422; color: #ef4444; border: 1px solid #ef444444; }
+
+    .example {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      margin: 8px 0;
+    }
+    .example-icon { font-size: 16px; flex-shrink: 0; margin-top: 2px; }
+    .example-text { font-size: 12px; }
+
+    .divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, #4ade8033, transparent);
+      margin: 32px 0;
+    }
+
+    .footer {
+      margin-top: 40px;
+      padding-top: 16px;
+      border-top: 1px solid #27272a;
+      color: #52525b;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back">&larr; MESAFE 대시보드로 돌아가기</a>
+
+    <h1>NASA FIRMS 화점 데이터 읽는 법</h1>
+    <div class="subtitle">VIIRS SNPP NRT 375m &mdash; 위성 열감지 데이터 판독 가이드</div>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>1. 데이터 출처</h2>
+    <p>
+      <span class="highlight">FIRMS</span> (Fire Information for Resource Management System)는
+      NASA가 운영하는 위성 기반 화재 감지 시스템입니다.
+      MESAFE는 <span class="highlight">VIIRS SNPP NRT</span> (Visible Infrared Imaging Radiometer Suite)
+      센서 데이터를 사용하며, 해상도는 <span class="highlight">375m &times; 375m</span>입니다.
+    </p>
+    <p class="dim">
+      위성은 하루 약 2회 동일 지점 상공을 통과하며, 통과 시점에 감지된 열원(thermal anomaly)을
+      "화점"(hotspot)으로 보고합니다. 실제 불꽃이 아니라 <b>적외선 열 이상</b>을 감지하는 것입니다.
+    </p>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>2. 각 필드의 의미</h2>
+
+    <table>
+      <tr><th>필드</th><th>설명</th></tr>
+      <tr>
+        <td class="highlight">FRP (MW)</td>
+        <td>
+          <b>Fire Radiative Power</b> &mdash; 화재가 방출하는 복사 에너지(메가와트).
+          <b>화재 규모를 판단하는 가장 핵심적인 지표</b>입니다.
+          값이 클수록 더 강력한 열원입니다.
+        </td>
+      </tr>
+      <tr>
+        <td class="highlight">INTENSITY</td>
+        <td>
+          FRP 기반 분류. MESAFE 자체 기준:<br>
+          <span class="tag tag-low">LOW</span> &le; 10MW &nbsp;
+          <span class="tag tag-med">MEDIUM</span> 10~50MW &nbsp;
+          <span class="tag tag-high">HIGH</span> 50~100MW &nbsp;
+          <span class="tag tag-extreme">EXTREME</span> &gt; 100MW
+        </td>
+      </tr>
+      <tr>
+        <td class="highlight">BRIGHTNESS</td>
+        <td>
+          센서가 측정한 밝기온도(Kelvin)를 0~100%로 정규화한 값.
+          원본 300K = 0%, 500K = 100%. 참고 지표이며 FRP가 더 정확합니다.
+        </td>
+      </tr>
+      <tr>
+        <td class="highlight">CONFIDENCE</td>
+        <td>
+          화재일 확률에 대한 NASA의 자체 평가.<br>
+          <span class="green">HIGH</span> &mdash; 화재 확실 &nbsp;
+          <span class="green">NOMINAL</span> &mdash; 화재 가능성 높음 &nbsp;
+          <span class="warn">LOW</span> &mdash; 오탐 가능성 있음
+        </td>
+      </tr>
+      <tr>
+        <td class="highlight">UTC / LCL</td>
+        <td>
+          위성이 해당 지점을 촬영한 시각 (UTC 및 사용자 로컬 시간).
+          화재 발생 시각이 아니라 <b>위성 관측 시각</b>입니다.
+        </td>
+      </tr>
+    </table>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>3. FRP로 화재 규모 판단하기</h2>
+
+    <table>
+      <tr><th>FRP (MW)</th><th>등급</th><th>일반적 원인</th></tr>
+      <tr>
+        <td>&lt; 5</td>
+        <td><span class="tag tag-low">LOW</span></td>
+        <td>농업 소각, 쓰레기 소각, 소규모 화재 초기 단계</td>
+      </tr>
+      <tr>
+        <td>5 ~ 10</td>
+        <td><span class="tag tag-low">LOW</span></td>
+        <td>가스 플레어(유전), 소규모 산불</td>
+      </tr>
+      <tr>
+        <td>10 ~ 50</td>
+        <td><span class="tag tag-med">MEDIUM</span></td>
+        <td>활성 산불, 대규모 농업 화재, 산업시설 화재</td>
+      </tr>
+      <tr>
+        <td>50 ~ 100</td>
+        <td><span class="tag tag-high">HIGH</span></td>
+        <td>대형 산불, 정유시설/유전 화재, 대규모 폭발</td>
+      </tr>
+      <tr>
+        <td>&gt; 100</td>
+        <td><span class="tag tag-extreme">EXTREME</span></td>
+        <td>초대형 산불, 유전 화재, 대규모 군사 폭격 후 화재</td>
+      </tr>
+    </table>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>3-1. 화점 밀집(클러스터) 읽는 법</h2>
+    <p>
+      개별 화점의 FRP가 낮더라도, <b>좁은 영역에 여러 화점이 겹쳐 있다면</b> 전체적으로 강력한 열원입니다.
+      MESAFE는 클릭 지점 주변의 화점을 자동으로 묶어 <span class="highlight">밀집 요약</span>을 표시합니다.
+    </p>
+
+    <h3>밀집 팝업의 필드</h3>
+    <table>
+      <tr><th>필드</th><th>설명</th></tr>
+      <tr>
+        <td class="highlight">총 FRP</td>
+        <td>밀집 영역 내 모든 화점의 FRP 합산. <b>클러스터의 실질적 규모</b>를 나타냅니다.</td>
+      </tr>
+      <tr>
+        <td class="highlight">최대 FRP</td>
+        <td>가장 강력한 개별 화점의 FRP. 단일 폭발/화재의 규모 지표.</td>
+      </tr>
+      <tr>
+        <td class="highlight">평균 FRP</td>
+        <td>화점당 평균 FRP. 낮으면 다수의 소규모 열원, 높으면 대형 화재 복수 발생.</td>
+      </tr>
+      <tr>
+        <td class="highlight">밀집 강도</td>
+        <td>
+          총 FRP 기반 분류:<br>
+          <span class="tag tag-low">LOW</span> &le; 30MW &nbsp;
+          <span class="tag tag-med">MEDIUM</span> 30~80MW &nbsp;
+          <span class="tag tag-high">HIGH</span> 80~200MW &nbsp;
+          <span class="tag tag-extreme">EXTREME</span> &gt; 200MW
+        </td>
+      </tr>
+    </table>
+
+    <h3>밀집 패턴 해석</h3>
+    <div class="card card-fire">
+      <div class="example">
+        <span class="example-icon">🔴</span>
+        <div class="example-text">
+          <b>총 FRP &gt; 100MW + 화점 3개 이상</b><br>
+          대규모 화재 또는 군사 공격 가능성이 높습니다. 뉴스/SNS 교차 확인이 반드시 필요합니다.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">🟡</span>
+        <div class="example-text">
+          <b>화점 5개 이상 + 평균 FRP &lt; 5MW</b><br>
+          개별 열원은 미약하지만 다수 밀집. 농업 소각(밭 태우기) 또는 요격 잔해 낙하 패턴일 수 있습니다.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">🔵</span>
+        <div class="example-text">
+          <b>화점 2~3개 + 저FRP</b><br>
+          소규모 열원 복수 발생. 대부분 자연적 원인이지만 위치가 군사시설 근처라면 주의.
+        </div>
+      </div>
+    </div>
+
+    <p class="dim" style="font-size:11px">
+      * 히트맵(저줌 레벨)에서 밝게 보이는 영역은 화점이 밀집된 것입니다.
+      개별 화점의 강도가 아니라 <b>밀도</b>가 밝기를 결정합니다.
+      줌인하면 개별 원으로 표시되며, 원의 크기와 색상이 FRP에 비례합니다.
+    </p>
+
+    <div class="divider"></div>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>4. 군사적 해석 가이드</h2>
+    <p>
+      FIRMS 데이터만으로 군사 활동을 확정할 수는 없지만, 다른 정보와 종합하면 유의미한 판단 근거가 됩니다.
+      아래는 분쟁 지역에서 화점을 해석하는 실전 기준입니다.
+    </p>
+
+    <h3>미사일 / 드론 공격으로 의심되는 패턴</h3>
+    <div class="card card-fire">
+      <div class="example">
+        <span class="example-icon">🎯</span>
+        <div class="example-text">
+          <b>고FRP 단일 화점이 도시/군사시설 근처에 갑자기 출현</b><br>
+          FRP 50MW 이상, 이전 시간대에 없던 화점이 단발로 나타남.
+          주변에 군사기지, 공항, 항만, 정유시설이 있다면 공습/미사일 타격 가능성.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">💥</span>
+        <div class="example-text">
+          <b>좁은 영역에 동시다발 화점 클러스터</b><br>
+          수 km 반경에 여러 화점이 같은 관측 시각에 출현.
+          융단폭격(carpet bombing) 또는 다연장 로켓 공격 패턴.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">🚀</span>
+        <div class="example-text">
+          <b>직선으로 나열된 화점</b><br>
+          일렬 패턴은 순항미사일 경로 또는 드론 잔해 낙하 궤적일 수 있음.
+          단, 도로변 농업 소각과 구별 필요.
+        </div>
+      </div>
+    </div>
+
+    <h3>요격으로 의심되는 패턴</h3>
+    <div class="card card-fire">
+      <div class="example">
+        <span class="example-icon">🛡️</span>
+        <div class="example-text">
+          <b>도시 외곽/사막에 저FRP 화점 다수</b><br>
+          FRP 5~20MW급 화점이 도시 주변 빈 지역에 흩어져 나타남.
+          요격 미사일이 표적을 격추한 뒤 잔해가 낙하하면서 발생하는 패턴.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">🔥</span>
+        <div class="example-text">
+          <b>화점이 목표물이 아닌 빈 지역에 위치</b><br>
+          군사시설이나 도시가 아닌 사막/농경지에 화점이 있다면
+          요격된 미사일/드론 잔해의 낙하 지점일 가능성.
+        </div>
+      </div>
+    </div>
+
+    <h3>군사 활동이 아닐 가능성이 높은 패턴</h3>
+    <div class="card">
+      <div class="example">
+        <span class="example-icon">🌾</span>
+        <div class="example-text">
+          <b>넓은 지역에 규칙적으로 분포된 저FRP 화점</b><br>
+          FRP &lt; 5MW, 격자/줄 패턴 &rarr; 농업 소각(밭 태우기).
+          이라크, 이란 농촌에서 매우 흔합니다.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">🛢️</span>
+        <div class="example-text">
+          <b>동일 좌표에 매일 반복 출현하는 화점</b><br>
+          유전의 가스 플레어(gas flare). 걸프만, 이라크 남부, 이란 서부에 다수.
+          항상 같은 위치에 있고 FRP가 일정합니다.
+        </div>
+      </div>
+      <div class="example">
+        <span class="example-icon">🏭</span>
+        <div class="example-text">
+          <b>산업단지/정유시설 위치의 지속적 화점</b><br>
+          정유, 제철, 시멘트 공장 등 산업시설의 열원.
+          위치가 고정적이고 FRP가 안정적입니다.
+        </div>
+      </div>
+    </div>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>5. 지도에서의 시각적 표현</h2>
+    <div class="card">
+      <p style="margin-bottom:6px">
+        <span class="highlight">&bull; 히트맵</span> (줌 9 미만) &mdash;
+        화점 밀도 기반 열지도. 밝을수록 화점이 많이 겹쳐있다는 의미입니다.
+        개별 FRP가 아니라 <b>밀집도</b>에 비례합니다.
+      </p>
+      <p style="margin-bottom:6px">
+        <span class="highlight">&bull; 원 표시</span> (줌 9 이상) &mdash;
+        개별 화점이 원으로 표시됩니다. <b>원이 클수록 FRP가 높고</b>,
+        색상도 FRP에 따라 변합니다:
+      </p>
+      <p style="margin-bottom:6px;padding-left:16px">
+        <span style="color:#3b82f6">● 파랑</span> &lt; 5MW &nbsp;
+        <span style="color:#fbbf24">● 노랑</span> 5~20MW &nbsp;
+        <span style="color:#f97316">● 주황</span> 20~50MW &nbsp;
+        <span style="color:#ef4444">● 빨강</span> &gt; 50MW
+      </p>
+      <p style="margin-bottom:0">
+        <span class="highlight">&bull; 밀집 팝업</span> &mdash;
+        화점을 클릭하면 주변 겹쳐진 화점을 자동 감지하여 총 FRP, 개수, 밀집 강도를 요약합니다.
+      </p>
+    </div>
+
+    <div class="divider"></div>
+
+    <h2>6. 판독 시 주의사항</h2>
+
+    <div class="card card-warn">
+      <p class="warn" style="margin-bottom:8px"><b>FIRMS 데이터의 한계를 반드시 인지하세요.</b></p>
+      <p style="margin-bottom:6px">
+        <span class="warn">&bull;</span>
+        위성은 하루 약 2회 통과합니다. 통과 사이에 발생한 화재는 감지되지 않습니다.
+      </p>
+      <p style="margin-bottom:6px">
+        <span class="warn">&bull;</span>
+        구름 아래의 화재는 감지 불가합니다. 흐린 날에는 데이터가 크게 줄어듭니다.
+      </p>
+      <p style="margin-bottom:6px">
+        <span class="warn">&bull;</span>
+        해상도가 375m이므로 하나의 화점은 실제로 375m&times;375m 영역입니다.
+        정밀한 타격 지점을 특정할 수 없습니다.
+      </p>
+      <p style="margin-bottom:6px">
+        <span class="warn">&bull;</span>
+        표시된 시각은 <b>위성 관측 시각</b>이지 화재 발생 시각이 아닙니다.
+        실제 화재는 수 시간 전에 시작되었을 수 있습니다.
+      </p>
+      <p style="margin-bottom:0">
+        <span class="warn">&bull;</span>
+        <b>단일 화점만으로 군사 활동을 단정하지 마세요.</b>
+        뉴스, SNS 보도, ADS-B 항적 등 다른 정보원과 반드시 교차 확인하세요.
+      </p>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+    <h2>6. 빠른 판독 체크리스트</h2>
+    <div class="card">
+      <p style="margin-bottom:6px"><span class="green">1.</span> <b>FRP 확인</b> &mdash; 10MW 이상이면 주목, 50MW 이상이면 심각한 화재</p>
+      <p style="margin-bottom:6px"><span class="green">2.</span> <b>위치 확인</b> &mdash; 도시/군사시설 근처인가, 농촌/사막인가?</p>
+      <p style="margin-bottom:6px"><span class="green">3.</span> <b>패턴 확인</b> &mdash; 단발인가, 클러스터인가, 규칙적인가?</p>
+      <p style="margin-bottom:6px"><span class="green">4.</span> <b>시간 확인</b> &mdash; 갑자기 나타났는가, 매일 반복되는가?</p>
+      <p style="margin-bottom:0"><span class="green">5.</span> <b>교차 확인</b> &mdash; 뉴스/SNS/ADS-B 데이터와 일치하는가?</p>
+    </div>
+
+    <div class="footer">
+      MESAFE &mdash; 본 가이드는 공개 정보(OSINT) 판독을 위한 참고 자료입니다.<br>
+      데이터 출처: <a href="https://firms.modaps.eosdis.nasa.gov/" target="_blank" rel="noopener">NASA FIRMS</a>
+      (VIIRS SNPP Near Real-Time 375m)
+    </div>
+  </div>
+</body>
+</html>
