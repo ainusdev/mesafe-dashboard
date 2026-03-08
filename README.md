@@ -1,9 +1,9 @@
 # MESAFE — Middle East Safety Dashboard
 
 Real-time conflict monitoring dashboard for the Middle East.
-Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS), and simulation mode.
+Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS), airport data, and simulation mode.
 
-**Live:** https://conflict-safety-dashboard.web.app
+**Live:** https://mesafe.ainus.dev
 
 ---
 
@@ -14,7 +14,8 @@ Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS), and simulation mode.
 | Frontend | Vite + React 19, Mapbox GL JS v3, Tailwind CSS v3 |
 | Backend | Node.js + Express + Socket.io |
 | Database | Firebase Firestore |
-| Hosting | Firebase Hosting (frontend), Render.com (backend) |
+| Storage | Firebase Storage (CSV backups) |
+| Hosting | Firebase Hosting (frontend), Koyeb (backend) |
 | Analytics | Firebase Analytics, Cloudflare Web Analytics |
 
 ---
@@ -37,7 +38,7 @@ cd server && npm install
 ```env
 VITE_MAPBOX_TOKEN=...
 VITE_BACKEND_DEV_URL=http://localhost:3001
-VITE_BACKEND_RELEASE_URL=https://your-render-app.onrender.com
+VITE_BACKEND_RELEASE_URL=https://api.mesafe.ainus.dev
 ```
 
 **`server/.env`**
@@ -48,9 +49,10 @@ NASA_FIRMS_MAP_KEY=...
 FIREBASE_SERVICE_ACCOUNT=./serviceAccount.json
 PORT=3001
 
-# CSV persistence (default: off)
-SAVE_OPENSKY_CSV=true
-SAVE_FIRMS_CSV=true
+# Polling intervals (default: 300000ms = 5min)
+AIRCRAFT_INTERVAL_MS=300000
+FIRMS_INTERVAL_MS=300000
+INTERVAL_JITTER_MULTIPLIER=3
 ```
 
 `server/serviceAccount.json` — Firebase service account key (Firebase Console → Project Settings → Service Accounts)
@@ -77,10 +79,11 @@ GET /api/health
 
 ## Data Sources
 
-| Source | Interval | Notes |
+| Source | Default Interval | Notes |
 |--------|----------|-------|
-| OpenSky Network (ADS-B) | 22s | OAuth — may time out from cloud IPs |
-| NASA FIRMS VIIRS 375m | 10s | 5,000 req/10min limit |
+| OpenSky Network (ADS-B) | 5min + jitter | OAuth — may time out from cloud IPs |
+| NASA FIRMS VIIRS 375m | 5min + jitter | Bounding box: Middle East (29°–60°E, 22°–42°N) |
+| OurAirports (CSV) | On startup / on-demand | Large + medium airports |
 
 ---
 
@@ -88,7 +91,8 @@ GET /api/health
 
 ### Live Mode (default)
 - Real-time aircraft positions via ADS-B (OpenSky Network)
-- Fire hotspots from NASA FIRMS satellite data, saved to Firestore
+- Fire hotspots from NASA FIRMS satellite data
+- Airport data from OurAirports
 - Connection status indicator (LIVE / CONNECTING / MOCK)
 - Auto-fallback to mock data if backend is unreachable
 
@@ -97,38 +101,43 @@ GET /api/health
 - **STOP** — pause simulation, download mock data as CSV
 - **CLR** — clear all simulation data
 - Region change during simulation immediately reseeds data
-- Mock aircraft have OpenSky-compatible fields (not saved to Firestore)
 
 ### Map Layers
-- **Aircraft** — SVG icons rotating by heading; military (red), civilian (green)
-- **Fires** — heatmap (zoom < 9), circles (zoom >= 9)
-- **Airports** — international airports on by default; other airports toggleable
-- Country flag emoji rendered above each aircraft via canvas (bypasses Mapbox SDF font limit)
+- **Aircraft** — SVG icons rotating by heading; military (red), suspected (yellow), civilian (green)
+- **Fires** — heatmap (zoom < 9), FRP-scaled circles (zoom ≥ 9) with color gradient (blue → yellow → red)
+- **Airports** — large airports visible by default; medium/small airports toggleable
+- Country flag icons above each aircraft (fetched from flagcdn.com)
 - Callsign text below each aircraft icon
 
-### Aircraft Popup
-- ICAO, callsign, altitude, speed, heading, origin country
-- FlightAware schedule link for airline flight numbers
-
-### Airport Popup
-- Name, ICAO/IATA, type, elevation
-- FlightAware departures link (opens in new tab)
+### Fire Hotspot Details
+- FRP-based circle sizing and coloring for visual intensity distinction
+- Cluster popup: clicking overlapping hotspots shows aggregate stats (total/max/avg FRP, intensity breakdown, assessment)
+- Korean-language FIRMS guide linked from fire popup (`/guide/firms.html`)
 
 ### Fire Time Window Filter
 Filter hotspots by acquisition time: **1H / 6H / 12H / 24H**
+Uses GPU-side `map.setFilter()` for instant response.
 
 ### Aircraft Filter
 Filter by type: **ALL / MILITARY / CIVILIAN**
 
 ---
 
-## CSV Persistence
+## Data Persistence
 
-When `SAVE_OPENSKY_CSV=true` or `SAVE_FIRMS_CSV=true`:
-- Data saved to `server/opensky_dumps/` or `server/firms_dumps/` on each fetch
-- Response served from the saved CSV (not raw API response)
-- On server restart, latest CSV is loaded immediately as initial state
-- Firestore saving is unaffected (always on when configured)
+### CSV Cache (`server/cache/`)
+- Aircraft: timestamped CSV, keeps only latest file
+- Fires: timestamped CSV per fetch, keeps 24h window, merged by ID on load
+- Airports: single `airports.csv`, overwritten on each fetch
+
+### Firebase Storage
+- CSVs uploaded to Storage on save: `csv/{type}/{YYYY-MM-DD}/{filename}`
+- Bulk upload of existing CSVs on server startup
+- Hourly sync at :00
+
+### Firestore
+- On startup, fires are **always** merged from Firestore to ensure full 24h coverage (VIIRS satellite pass timing can cause partial API results)
+- Aircraft and airports restored from Firestore only when CSV cache is empty
 
 ---
 
@@ -138,7 +147,7 @@ When `SAVE_OPENSKY_CSV=true` or `SAVE_FIRMS_CSV=true`:
 # Frontend → Firebase Hosting
 npm run build && firebase deploy --only hosting
 
-# Backend → Render.com (auto-deploy on push to main)
+# Backend → Koyeb (auto-deploy on push to main)
 git push origin main
 ```
 
@@ -148,25 +157,36 @@ git push origin main
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/health` | Server status, uptime, socket connection count, data counts |
+| `GET /api/health` | Server status, uptime, socket connections, data counts |
 | `GET /api/aircraft` | Current aircraft data |
 | `GET /api/fires` | Current fire hotspot data |
 | `GET /api/airports/me` | Middle East airport data |
+| `GET /api/airports?country=XX` | Airports by country (AviationStack) |
+| `GET /api/flights?airport=XXX&date=YYYY-MM-DD` | Flights by airport (AviationStack) |
+
+### Socket.io Events
+
+| Event | Direction | Description |
+|-------|-----------|-------------|
+| `data:init` | Client → Server | Request initial data for all layers |
+| `aircraft:update` | Server → Client | Aircraft position update |
+| `fires:update` | Server → Client | Fire hotspot update |
+| `airports:update` | Server → Client | Airport data update |
 
 ---
 
 ## Firestore Schema
 
-Collection: `fire_hotspots`
+**`aircraft_snapshots/latest`** — Latest aircraft positions (overwrite)
+
+**`fire_snapshots/{timestamp}`** — Fire data per fetch cycle (24h retention)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | `fire-{date}-{time}-{lat}-{lon}` |
-| `coords` | array | `[lon, lat]` |
-| `acqTimestamp` | number | UTC milliseconds |
-| `acqDate` | string | `YYYY-MM-DD` |
-| `acqTime` | string | `HHMM` UTC |
-| `brightness` | number | Normalized 0–1 |
-| `frp` | number | Fire Radiative Power (MW) |
-| `intensity` | string | LOW / MEDIUM / HIGH / EXTREME |
-| `confidence` | string | h / m / l / nominal |
+| `fires` | array | Fire objects (chunked at 500 per doc) |
+| `savedAt` | number | UTC milliseconds |
+| `count` | number | Number of fires in chunk |
+
+**Fire object fields:** `id`, `coords [lon,lat]`, `acqTimestamp`, `acqDate`, `acqTime`, `brightness` (0–1), `frp` (MW), `intensity` (LOW/MEDIUM/HIGH/EXTREME), `confidence` (h/m/l/nominal)
+
+**`airport_snapshots/latest`** — Latest airport data (overwrite)
