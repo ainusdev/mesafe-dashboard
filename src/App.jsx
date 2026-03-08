@@ -586,7 +586,7 @@ export default function App() {
       animToRef.current = aircraftDataRef.current
       const map = mapInstanceRef.current
       if (map?.isStyleLoaded()) {
-        const filtered = getFilteredAircraft(fireDataRef.current, fireHoursFilterRef.current)
+        const filtered = getFilteredFires(fireDataRef.current, fireHoursFilterRef.current)
         map.getSource('fire-source')?.setData(toGeoJSONFires(filtered))
       }
     }, 10000)

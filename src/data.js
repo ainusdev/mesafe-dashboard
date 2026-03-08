@@ -14,9 +14,9 @@ export function getFilteredAircraft(data, filter) {
 }
 
 export function getFilteredFires(data, hours) {
-  if (!hours || hours >= 24) return data
+  if (!hours) return data
   const cutoff = Date.now() - hours * 3600 * 1000
-  return data.filter(f => !f.acqTimestamp || f.acqTimestamp >= cutoff)
+  return data.filter(f => f.acqTimestamp > 0 && f.acqTimestamp >= cutoff)
 }
 
 export function lerp(a, b, t) { return a + (b - a) * t }
