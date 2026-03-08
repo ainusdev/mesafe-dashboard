@@ -242,6 +242,7 @@ function loadAirportsCache() {
 module.exports = {
   parseCSVLine,
   FIRMS_CSV_HEADERS,
+  latestCacheFile,
   saveAircraftCache, loadAircraftCache,
   saveFiresCache,    loadFiresCache,
   saveAirportsCache, loadAirportsCache,
