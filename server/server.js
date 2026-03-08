@@ -11,7 +11,7 @@ const { log }                                     = require('./lib/logger')
 const { loadAircraftCache, loadFiresCache, loadAirportsCache,
         saveAircraftCache, saveFiresCache, saveAirportsCache,
         latestCacheFile } = require('./lib/cache')
-const { initFirestore, migrateFireHotspotsToSnapshots,
+const { initFirestore,
         saveAircraftToFirestore, saveFiresToFirestore, saveAirportsToFirestore,
         loadAircraftFromFirestore, loadFiresFromFirestore, loadAirportsFromFirestore,
 }                                                 = require('./lib/firestore')
@@ -48,10 +48,6 @@ let fireData     = loadFiresCache()
 let airportData  = loadAirportsCache()
 
 ;(async () => {
-  // 구 포맷 마이그레이션 — 복구를 블로킹하지 않도록 백그라운드 실행
-  migrateFireHotspotsToSnapshots().catch(err =>
-    log('Firestore', `Migration error: ${err.message}`, 'warn'))
-
   // CSV가 비어있는 항목만 Firestore에서 복구
   const needAircraft = aircraftData.length === 0
   const needFires    = fireData.length === 0

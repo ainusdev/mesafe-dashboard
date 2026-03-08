@@ -78,7 +78,9 @@ async function loadFiresFromFirestore() {
   for (const doc of snap.docs) {
     const { fires } = doc.data()
     if (Array.isArray(fires)) {
-      for (const f of fires) { if (f.id) seen.set(f.id, f) }
+      for (const f of fires) {
+        if (f.id && f.acqTimestamp > 0 && f.acqTimestamp >= cutoff) seen.set(f.id, f)
+      }
     }
   }
   const result = [...seen.values()]
@@ -107,30 +109,8 @@ async function loadAirportsFromFirestore() {
   return result
 }
 
-// ─── Migration: fire_hotspots → fire_snapshots (1회, 구 데이터 손실 없이) ────
-
-async function migrateFireHotspotsToSnapshots() {
-  if (!db) return
-  const check = await db.collection('fire_hotspots').limit(1).get()
-  if (check.empty) {
-    log('Firestore', 'fire_hotspots empty — migration skipped')
-    return
-  }
-  const fullSnap = await db.collection('fire_hotspots').get()
-  const fires    = fullSnap.docs.map(d => d.data())
-  const savedAt  = Date.now()
-  const ts       = new Date(savedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const CHUNK    = 500
-  for (let i = 0; i < fires.length; i += CHUNK) {
-    const chunk = fires.slice(i, i + CHUNK)
-    const id    = fires.length > CHUNK ? `migrated_${ts}_${String(i).padStart(5, '0')}` : `migrated_${ts}`
-    await db.collection('fire_snapshots').doc(id).set({ fires: chunk, savedAt, count: chunk.length })
-  }
-  log('Firestore', `Migration complete — ${fires.length} hotspots → fire_snapshots`)
-}
-
 module.exports = {
-  initFirestore, migrateFireHotspotsToSnapshots,
+  initFirestore,
   saveAircraftToFirestore, saveFiresToFirestore, saveAirportsToFirestore,
   loadAircraftFromFirestore, loadFiresFromFirestore, loadAirportsFromFirestore,
 }
