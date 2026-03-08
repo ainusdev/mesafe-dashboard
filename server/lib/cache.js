@@ -149,22 +149,44 @@ function saveFiresCache(fires) {
   }
 }
 
+function parseFireLine(line) {
+  const v = line.split(',')
+  if (v.length < 10) return null
+  return {
+    id: v[0], coords: [parseFloat(v[1]), parseFloat(v[2])],
+    brightness: parseFloat(v[3]), frp: parseFloat(v[4]),
+    confidence: v[5], acqDate: v[6], acqTime: v[7],
+    acqTimestamp: parseInt(v[8], 10), intensity: v[9],
+  }
+}
+
 function loadFiresCache() {
   try {
-    const file = latestCacheFile('fires')
-    if (!file) return []
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
-    if (lines.length < 2) return []
-    return lines.slice(1).map(line => {
-      const v = line.split(',')
-      if (v.length < 10) return null
-      return {
-        id: v[0], coords: [parseFloat(v[1]), parseFloat(v[2])],
-        brightness: parseFloat(v[3]), frp: parseFloat(v[4]),
-        confidence: v[5], acqDate: v[6], acqTime: v[7],
-        acqTimestamp: parseInt(v[8], 10), intensity: v[9],
-      }
-    }).filter(Boolean)
+    if (!fs.existsSync(CACHE_DIR)) return []
+    const cutoff = Date.now() - 24 * 3600 * 1000
+    const files = fs.readdirSync(CACHE_DIR)
+      .filter(f => f.startsWith('fires_') && f.endsWith('.csv'))
+      .sort()
+
+    if (files.length === 0) return []
+
+    const seen = new Map()
+    for (const f of files) {
+      // parse timestamp from filename to skip files older than 24h
+      const iso = f.slice('fires_'.length, -4).replace(/T(\d{2})-(\d{2})-(\d{2})$/, 'T$1:$2:$3')
+      const ts  = new Date(iso).getTime()
+      if (!isNaN(ts) && ts < cutoff) continue
+
+      try {
+        const lines = fs.readFileSync(path.join(CACHE_DIR, f), 'utf8').trim().split('\n')
+        for (const line of lines.slice(1)) {
+          const fire = parseFireLine(line)
+          if (fire && fire.id) seen.set(fire.id, fire)
+        }
+      } catch {}
+    }
+
+    return [...seen.values()]
   } catch (err) {
     log('FIRMS', `Cache load error: ${err.message}`, 'error')
     return []
