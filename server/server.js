@@ -64,9 +64,9 @@ let airportData  = loadAirportsCache()
     needAirports ? loadAirportsFromFirestore() : Promise.resolve([]),
   ])
 
-  if (fsAircraft.length > 0) { saveAircraftCache(fsAircraft); aircraftData = loadAircraftCache() }
-  if (fsFires.length > 0)    { saveFiresCache(fsFires);       fireData     = loadFiresCache()    }
-  if (fsAirports.length > 0) { saveAirportsCache(fsAirports); airportData  = loadAirportsCache() }
+  if (fsAircraft.length > 0) { saveAircraftCache(fsAircraft); aircraftData = loadAircraftCache(); io.emit('aircraft:update', aircraftData) }
+  if (fsFires.length > 0)    { saveFiresCache(fsFires);       fireData     = loadFiresCache();    io.emit('fires:update', fireData)       }
+  if (fsAirports.length > 0) { saveAirportsCache(fsAirports); airportData  = loadAirportsCache(); io.emit('airports:update', airportData) }
 
   log('Firestore', `Restore complete — aircraft:${fsAircraft.length} fires:${fsFires.length} airports:${fsAirports.length}`)
 })().catch(err => log('Firestore', `Restore failed: ${err.message}`, 'warn'))
@@ -171,17 +171,11 @@ io.on('connection', (socket) => {
       log('Socket', `airports:update → ${airportData.length} ap → ${socket.id}`)
     })()
 
-    ;(async () => {
-      const ac = loadAircraftCache()
-      socket.emit('aircraft:update', ac)
-      log('Socket', `aircraft:update → ${ac.length} ac → ${socket.id}`)
-    })()
+    socket.emit('aircraft:update', aircraftData)
+    log('Socket', `aircraft:update → ${aircraftData.length} ac → ${socket.id}`)
 
-    ;(async () => {
-      const fires = loadFiresCache()
-      socket.emit('fires:update', fires)
-      log('Socket', `fires:update → ${fires.length} fires → ${socket.id}`)
-    })()
+    socket.emit('fires:update', fireData)
+    log('Socket', `fires:update → ${fireData.length} fires → ${socket.id}`)
   })
 
   socket.on('disconnect', () => {
