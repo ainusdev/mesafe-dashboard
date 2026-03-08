@@ -47,34 +47,38 @@ initFirestore()
 uploadAllCsvToStorage()
 scheduleHourlyStorageSync()
 
-// ─── 2. CSV 로드 → 비어있으면 Firestore에서 복구 (비동기, 비차단) ────────────
+// ─── 2. CSV 로드 → Firestore 병합 (비동기, 비차단) ─────────────────────────
 
 let aircraftData = loadAircraftCache()
 let fireData     = loadFiresCache()
 let airportData  = loadAirportsCache()
 
 ;(async () => {
-  // CSV가 비어있는 항목만 Firestore에서 복구
   const needAircraft = aircraftData.length === 0
-  const needFires    = fireData.length === 0
   const needAirports = airportData.length === 0
 
-  if (!needAircraft && !needFires && !needAirports) {
-    log('Cache', 'All CSV caches loaded — Firestore restore skipped')
-    return
-  }
-
+  // 화점은 위성 패스 타이밍에 따라 API 결과가 달라지므로 항상 Firestore와 병합
   const [fsAircraft, fsFires, fsAirports] = await Promise.all([
     needAircraft ? loadAircraftFromFirestore() : Promise.resolve([]),
-    needFires    ? loadFiresFromFirestore()    : Promise.resolve([]),
+    loadFiresFromFirestore(),
     needAirports ? loadAirportsFromFirestore() : Promise.resolve([]),
   ])
 
   if (fsAircraft.length > 0) { saveAircraftCache(fsAircraft); aircraftData = loadAircraftCache(); io.emit('aircraft:update', aircraftData) }
-  if (fsFires.length > 0)    { saveFiresCache(fsFires);       fireData     = loadFiresCache();    io.emit('fires:update', fireData)       }
   if (fsAirports.length > 0) { saveAirportsCache(fsAirports); airportData  = loadAirportsCache(); io.emit('airports:update', airportData) }
 
-  log('Firestore', `Restore complete — aircraft:${fsAircraft.length} fires:${fsFires.length} airports:${fsAirports.length}`)
+  // 화점: Firestore 데이터를 CSV에 병합 → 전체 24h 데이터 보장
+  if (fsFires.length > 0) {
+    saveFiresCache(fsFires)
+    const merged = loadFiresCache()
+    if (merged.length > fireData.length) {
+      fireData = merged
+      io.emit('fires:update', fireData)
+      log('Firestore', `Fire merge: CSV ${fireData.length} < merged ${merged.length} — updated`)
+    }
+  }
+
+  log('Firestore', `Restore complete — aircraft:${fsAircraft.length} fires(fs):${fsFires.length} fires(merged):${fireData.length} airports:${fsAirports.length}`)
 })().catch(err => log('Firestore', `Restore failed: ${err.message}`, 'warn'))
 
 // ─── 3. API 폴링 사이클 ───────────────────────────────────────────────────────
