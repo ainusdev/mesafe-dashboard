@@ -96,7 +96,7 @@ async function doFetchAircraft() {
   if (data.length > 0) {
     aircraftData = data
     io.emit('aircraft:update', aircraftData)
-    saveAircraftToFirestore(data).catch(err => log('Firestore', `Aircraft save failed: ${err.message}`, 'warn'))
+    // saveAircraftToFirestore는 aircraft.js 내부에서 이미 호출됨
   }
 }
 
