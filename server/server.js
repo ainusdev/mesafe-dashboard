@@ -105,9 +105,10 @@ async function doFetchAircraft() {
 async function doFetchFIRMS() {
   const data = await fetchFIRMS()
   if (data.length > 0) {
-    fireData = data
+    // fetchFIRMS 내부에서 saveFiresCache 호출됨 → CSV 저장 완료
+    // 24h 전체 CSV를 병합해서 사용 (최신 fetch만 쓰면 이전 데이터 유실)
+    fireData = loadFiresCache()
     io.emit('fires:update', fireData)
-    // saveFiresToFirestore는 fires.js 내부에서 이미 호출됨
   }
 }
 
