@@ -18,7 +18,7 @@ const { initFirestore,
 }                                                 = require('./lib/firestore')
 const { fetchAirports }                           = require('./lib/airports')
 const { fetchAircraft }                           = require('./lib/aircraft')
-const { fetchFIRMS }                              = require('./lib/fires')
+const { fetchFIRMS, deduplicateFires }             = require('./lib/fires')
 
 // ─── Express + Socket.io ──────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ async function bootstrap() {
 
       if (fsFires.length > 0) {
         saveFiresCache(fsFires)
-        const merged = loadFiresCache()
+        const merged = deduplicateFires(loadFiresCache())
         if (merged.length > fireData.length) {
           fireData = merged
           io.emit('fires:update', fireData)
@@ -131,7 +131,7 @@ async function doFetchAircraft() {
 async function doFetchFIRMS() {
   const data = await fetchFIRMS()
   if (data.length > 0) {
-    fireData = loadFiresCache()
+    fireData = deduplicateFires(loadFiresCache())
     io.emit('fires:update', fireData)
   }
 }
