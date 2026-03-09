@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 import { MAPBOX_TOKEN, BACKEND_URL, REGIONS, REGION_TZ, REGION_CODE } from './constants.js'
 import { formatTZ } from './utils.js'
 import { preloadAllFlags } from './flags.js'
-import { makeCivilianSVG, makeMilitarySVG, makeUnknownSVG } from './icons.js'
+import { loadMapIcons } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
 import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires } from './data.js'
 import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML } from './popups.js'
@@ -17,15 +17,17 @@ export default function App() {
   const [activeRegion, setActiveRegion] = useState(() => {
     // Preserve only region selection; clear everything else on load
     const saved = localStorage.getItem('mesafe_region')
-    const keepKeys = new Set(['mesafe_region'])
+    const keepKeys = new Set(['mesafe_region', 'mesafe_fire_hours'])
     Object.keys(localStorage).forEach(k => { if (!keepKeys.has(k)) localStorage.removeItem(k) })
     return (saved && REGIONS[saved]) ? saved : 'IRAN'
   })
   const [layers, setLayers] = useState({ aircraft: true, fires: true, airports: true, airportsOther: false })
   const [counts, setCounts] = useState({ aircraft: 0, fires: 0 })
-  const [fireHoursFilter, setFireHoursFilter] = useState(24)
+  const [fireHoursFilter, setFireHoursFilter] = useState(() => {
+    const saved = parseInt(localStorage.getItem('mesafe_fire_hours'), 10)
+    return [1, 6, 12, 24].includes(saved) ? saved : 24
+  })
   const [currentTime, setCurrentTime] = useState(new Date())
-  const [cursorCoords, setCursorCoords] = useState(null)
   const [mapLoaded, setMapLoaded] = useState(false)
   const [backendConnected, setBackendConnected] = useState(false)
   const [aircraftFilter, setAircraftFilter] = useState('ALL')
@@ -42,7 +44,7 @@ export default function App() {
   const activeRegionRef = useRef(activeRegion)
   const aircraftFilterRef = useRef('ALL')
   const backendConnectedRef = useRef(false)
-  const fireHoursFilterRef = useRef(24)
+  const fireHoursFilterRef = useRef(fireHoursFilter)
   const dataModeRef = useRef('live')
   const mockStateRef = useRef('stopped')
   const popupRef = useRef(null)
@@ -54,7 +56,7 @@ export default function App() {
 
   useEffect(() => { activeRegionRef.current = activeRegion }, [activeRegion])
   useEffect(() => { aircraftFilterRef.current = aircraftFilter }, [aircraftFilter])
-  useEffect(() => { fireHoursFilterRef.current = fireHoursFilter }, [fireHoursFilter])
+  useEffect(() => { fireHoursFilterRef.current = fireHoursFilter; localStorage.setItem('mesafe_fire_hours', String(fireHoursFilter)) }, [fireHoursFilter])
   useEffect(() => { dataModeRef.current = dataMode }, [dataMode])
   useEffect(() => { mockStateRef.current = mockState }, [mockState])
   useEffect(() => { localStorage.setItem('mesafe_region', activeRegion) }, [activeRegion])
@@ -135,7 +137,6 @@ export default function App() {
     })
 
     mapInstanceRef.current = map
-    map.on('mousemove', e => setCursorCoords([e.lngLat.lng, e.lngLat.lat]))
 
     map.on('load', () => {
       // ── Popup ──
@@ -179,38 +180,22 @@ export default function App() {
       })
       map.addLayer({
         id: 'fire-circle-layer',
-        type: 'circle',
+        type: 'symbol',
         source: 'fire-source',
         minzoom: 9,
-        paint: {
-          'circle-radius': [
+        layout: {
+          'icon-image': 'fire-emoji',
+          'icon-size': [
             'interpolate', ['linear'], ['zoom'],
-            9,  ['interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
-                  0, 3,  10, 5,  50, 8,  100, 12],
-            14, ['interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
-                  0, 5,  10, 9,  50, 14, 100, 20],
+            9, 0.4,  14, 1,
           ],
-          'circle-color': [
-            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
-            0,   '#3b82f6',
-            5,   '#fbbf24',
-            20,  '#f97316',
-            50,  '#ef4444',
-            100, '#dc2626',
-          ],
-          'circle-opacity': [
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+        paint: {
+          'icon-opacity': [
             'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
             0, 0.6,  10, 0.8,  50, 0.95,
-          ],
-          'circle-stroke-width': [
-            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
-            0, 1,  50, 2,  100, 3,
-          ],
-          'circle-stroke-color': [
-            'interpolate', ['linear'], ['to-number', ['get', 'frp'], 0],
-            0,  'rgba(59,130,246,0.4)',
-            10, 'rgba(255,140,0,0.6)',
-            50, 'rgba(239,68,68,0.8)',
           ],
         },
       })
@@ -342,12 +327,8 @@ export default function App() {
         type: 'symbol',
         source: 'aircraft-source',
         layout: {
-          'icon-image': ['match', ['get', 'militaryStatus'],
-            'military',  'aircraft-military',
-            'suspected', 'aircraft-unknown',
-            'aircraft-civilian',
-          ],
-          'icon-size': 1,
+          'icon-image': 'aircraft-emoji',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 3, 0.47, 5, 0.47, 14, 4.7],
           'icon-rotate': ['get', 'heading'],
           'icon-rotation-alignment': 'map',
           'icon-allow-overlap': true,
@@ -385,15 +366,7 @@ export default function App() {
       bindPopup('aircraft-layer', buildAircraftPopupHTML)
 
       // Icons load async — Mapbox auto-applies once added
-      const loadIcon = (name, svgFn, color) => {
-        const img = new Image()
-        img.onload = () => { if (!map.hasImage(name)) map.addImage(name, img) }
-        img.onerror = () => { console.warn(`[Map] Failed to load icon: ${name}`) }
-        img.src = svgFn(color)
-      }
-      loadIcon('aircraft-civilian', makeCivilianSVG, '#4ade80')
-      loadIcon('aircraft-military', makeMilitarySVG, '#ef4444')
-      loadIcon('aircraft-unknown',  makeUnknownSVG,  '#f59e0b')
+      loadMapIcons(map)
 
       // Apply any data already received before map loaded
       if (fireDataRef.current.length > 0) {
@@ -724,7 +697,7 @@ export default function App() {
   const toggleLayer = key => setLayers(prev => ({ ...prev, [key]: !prev[key] }))
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-zinc-950 text-green-400 font-mono overflow-hidden select-none">
+    <div className="flex flex-col h-dvh w-screen bg-zinc-950 text-green-400 font-mono overflow-hidden select-none">
 
       {/* ── TOP HUD ── */}
       <header className="flex items-center justify-between px-3 md:px-4 h-12 md:h-14 bg-zinc-900/80 border-b border-green-400/20 shrink-0 z-20 gap-2">
@@ -792,6 +765,30 @@ export default function App() {
             <span className="text-green-300 text-[11px] tracking-widest tabular-nums">{formatTZ(currentTime, tz)}</span>
           </div>
         ))}
+        <div className="border-t border-green-400/20">
+          <div className="flex items-center justify-between px-3 py-1 border-b border-green-400/10">
+            <span className="text-green-400/35 text-[10px] tracking-widest shrink-0">✈️️</span>
+            <span className="text-green-300 text-[11px] tracking-widest tabular-nums text-right">{counts.aircraft}</span>
+          </div>
+          <div className="flex items-center justify-between px-3 py-1">
+            <span className="text-orange-400/50 text-[10px] tracking-widest shrink-0">🔥</span>
+            <span className="text-orange-300 text-[11px] tracking-widest tabular-nums text-right">{counts.fires}</span>
+          </div>
+        </div>
+        {/* Fire time window — mobile only */}
+        <div className="md:hidden border-t border-green-400/20">
+          <div className="grid grid-cols-4 gap-0">
+            {[1, 6, 12, 24].map(h => (
+              <button key={h} onClick={() => { fireHoursFilterRef.current = h; setFireHoursFilter(h); applyFireFilter(h) }}
+                className={`py-1 text-[10px] tracking-wide transition-all
+                  ${fireHoursFilter === h
+                    ? 'bg-orange-400/15 text-orange-300'
+                    : 'text-green-400/30 active:text-green-400/60'}`}>
+                {h}H
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* ── MAIN ── */}
@@ -820,55 +817,6 @@ export default function App() {
             <button onClick={() => setSidebarOpen(false)} className="text-green-400/60 active:text-green-400 text-lg leading-none">✕</button>
           </div>
 
-          {/* Data mode selector */}
-          <div className="flex items-center gap-2 mb-2 border-b border-green-400/20 pb-2">
-            <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
-            <span className="text-green-400/50 text-xs tracking-widest">DATA MODE</span>
-          </div>
-          <div className="grid grid-cols-2 gap-1 mb-3">
-            {[['live', 'LIVE'], ['mock', 'MOCK']].map(([mode, label]) => (
-              <button key={mode} onClick={() => switchMode(mode)}
-                className={`py-2 text-xs border transition-all tracking-widest
-                  ${dataMode === mode
-                    ? mode === 'live'
-                      ? 'border-green-400/60 bg-green-400/15 text-green-300'
-                      : 'border-blue-400/50 bg-blue-400/10 text-blue-300'
-                    : 'border-green-400/10 text-green-400/30 hover:border-green-400/30 hover:text-green-400/60'}`}>
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Mock simulation controls */}
-          {dataMode === 'mock' && (
-            <div className="mb-3 border border-blue-400/20 bg-blue-400/5 p-2">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="w-0.5 h-3 bg-blue-400/50 shrink-0" />
-                <span className="text-blue-400/60 text-xs tracking-widest">SIMULATION</span>
-              </div>
-              <div className="grid grid-cols-3 gap-1">
-                <button onClick={mockStart} disabled={mockState === 'running'}
-                  className={`py-1.5 text-[11px] border transition-all
-                    ${mockState === 'running'
-                      ? 'border-blue-400/50 bg-blue-400/15 text-blue-300 cursor-default'
-                      : 'border-green-400/30 text-green-400/70 hover:border-green-400/60 hover:text-green-300'}`}>
-                  ▶ START
-                </button>
-                <button onClick={mockStop} disabled={mockState !== 'running'}
-                  className={`py-1.5 text-[11px] border transition-all
-                    ${mockState !== 'running'
-                      ? 'border-green-400/10 text-green-400/20 cursor-default'
-                      : 'border-amber-400/40 text-amber-400/80 hover:border-amber-400/70 hover:text-amber-300'}`}>
-                  ⏸ STOP
-                </button>
-                <button onClick={mockClear}
-                  className="py-1.5 text-[11px] border border-green-400/20 text-green-400/50 hover:border-red-400/50 hover:text-red-400/80 transition-all">
-                  ✕ CLR
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Region selector */}
           <div className="flex items-center gap-2 mb-2 border-b border-green-400/20 pb-2">
             <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
@@ -890,7 +838,7 @@ export default function App() {
             <span className="text-green-400/50 text-xs tracking-widest">LAYER CONTROL</span>
           </div>
           {[
-            { key: 'aircraft',      label: 'ADS-B TRACKS',  count: counts.aircraft, icon: '✈' },
+            { key: 'aircraft',      label: 'ADS-B TRACKS',  count: counts.aircraft, icon: '✈️' },
             { key: 'fires',         label: 'FIRE HOTSPOTS', count: counts.fires,    icon: '🔥' },
             { key: 'airports',      label: 'INTL AIRPORTS', count: null,            icon: '🛬' },
             { key: 'airportsOther', label: 'OTHER AIRPORTS', count: null,           icon: '🛩' },
@@ -905,8 +853,8 @@ export default function App() {
             </button>
           ))}
 
-          {/* Fire time filter */}
-          <div className="mt-3 border-t border-green-400/20 pt-3">
+          {/* Fire time filter — PC only (mobile uses time HUD) */}
+          <div className="hidden md:block mt-3 border-t border-green-400/20 pt-3">
             <div className="flex items-center gap-2 mb-2">
               <span className="w-0.5 h-3 bg-orange-400/50 shrink-0" />
               <span className="text-green-400/50 text-xs tracking-widest">FIRE TIME WINDOW</span>
@@ -977,6 +925,55 @@ export default function App() {
               </div>
             ))}
           </div>
+
+          {/* Data mode — bottom of sidebar */}
+          <div className="mt-auto pt-3 border-t border-green-400/20">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-0.5 h-3 bg-green-400/50 shrink-0" />
+              <span className="text-green-400/50 text-xs tracking-widest">DATA MODE</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {[['live', 'LIVE'], ['mock', 'MOCK']].map(([mode, label]) => (
+                <button key={mode} onClick={() => switchMode(mode)}
+                  className={`py-2 text-xs border transition-all tracking-widest
+                    ${dataMode === mode
+                      ? mode === 'live'
+                        ? 'border-green-400/60 bg-green-400/15 text-green-300'
+                        : 'border-blue-400/50 bg-blue-400/10 text-blue-300'
+                      : 'border-green-400/10 text-green-400/30 hover:border-green-400/30 hover:text-green-400/60'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {dataMode === 'mock' && (
+              <div className="mt-2 border border-blue-400/20 bg-blue-400/5 p-2">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-0.5 h-3 bg-blue-400/50 shrink-0" />
+                  <span className="text-blue-400/60 text-xs tracking-widest">SIMULATION</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  <button onClick={mockStart} disabled={mockState === 'running'}
+                    className={`py-1.5 text-[11px] border transition-all
+                      ${mockState === 'running'
+                        ? 'border-blue-400/50 bg-blue-400/15 text-blue-300 cursor-default'
+                        : 'border-green-400/30 text-green-400/70 hover:border-green-400/60 hover:text-green-300'}`}>
+                    ▶ START
+                  </button>
+                  <button onClick={mockStop} disabled={mockState !== 'running'}
+                    className={`py-1.5 text-[11px] border transition-all
+                      ${mockState !== 'running'
+                        ? 'border-green-400/10 text-green-400/20 cursor-default'
+                        : 'border-amber-400/40 text-amber-400/80 hover:border-amber-400/70 hover:text-amber-300'}`}>
+                    ⏸ STOP
+                  </button>
+                  <button onClick={mockClear}
+                    className="py-1.5 text-[11px] border border-green-400/20 text-green-400/50 hover:border-red-400/50 hover:text-red-400/80 transition-all">
+                    ✕ CLR
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </aside>
 
         {/* MAP */}
@@ -991,18 +988,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── BOTTOM STATUS BAR ── */}
-      <footer className="h-8 bg-zinc-900/80 border-t border-green-400/20 flex items-center justify-between px-3 md:px-4 z-20 shrink-0 text-[10px] text-green-400/40 tracking-widest tabular-nums">
-        <span className="font-mono">
-          {cursorCoords
-            ? `${cursorCoords[1].toFixed(3)}°N  ${cursorCoords[0].toFixed(3)}°E`
-            : '-- --'}
-        </span>
-        <span className="hidden md:block">
-          MESAFE v0.3 // {dataMode === 'live' ? (backendConnected ? 'LIVE' : 'CONNECTING') : mockState === 'running' ? 'SIM RUNNING' : 'SIM IDLE'}
-        </span>
-        <span>✈ {counts.aircraft}  🔥 {counts.fires}</span>
-      </footer>
     </div>
   )
 }
