@@ -8,9 +8,9 @@ import { formatTZ } from './utils.js'
 import { preloadAllFlags } from './flags.js'
 import { loadMapIcons } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
-import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires, toGeoJSONBases, toGeoJSONEmbassies } from './data.js'
+import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires, toGeoJSONBases, toGeoJSONEmbassies, toGeoJSONAirspaceClosure } from './data.js'
 import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML, buildBasePopupHTML, buildEmbassyPopupHTML } from './popups.js'
-import { MILITARY_BASES, EMBASSIES, EMERGENCY_CONTACTS, AIRPORT_STATUS as DEFAULT_AIRPORT_STATUS, REGION_COUNTRY, SHELTER_GUIDE, buildIcaoToFir, FIR_TO_ISO } from './facilities.js'
+import { MILITARY_BASES, EMBASSIES, EMERGENCY_CONTACTS, AIRPORT_STATUS as DEFAULT_AIRPORT_STATUS, REGION_COUNTRY, SHELTER_GUIDE, buildIcaoToFir, FIR_BOUNDARIES } from './facilities.js'
 import { computeProximityAlerts } from './alerts.js'
 
 // ─── App ───────────────────────────────────────────────────────────────────
@@ -131,49 +131,20 @@ export default function App() {
       if (st === 'CLOSED') firCounts[fir].closed++
       else if (st === 'RESTRICTED') firCounts[fir].restricted++
     }
-    const closedISO = [], restrictedISO = []
+    const closedFirs = [], restrictedFirs = []
     for (const [fir, c] of Object.entries(firCounts)) {
-      const iso = FIR_TO_ISO[fir]
-      if (!iso || c.total === 0) continue
+      if (c.total === 0) continue
       const nonOpenPct = (c.closed + c.restricted) / c.total
       const hasOpen = c.total - c.closed - c.restricted > 0
       if (nonOpenPct >= 0.2 && !hasOpen) {
-        closedISO.push(iso)          // ≥20% non-open AND no open airports → red
+        closedFirs.push(fir)          // ≥20% non-open AND no open airports → red
       } else if (nonOpenPct >= 0.2 && hasOpen) {
-        restrictedISO.push(iso)      // ≥20% non-open BUT has open → amber
+        restrictedFirs.push(fir)      // ≥20% non-open BUT has open → amber
       }
-      // else: non-open < 20% → no color
     }
-    const allISO = [...closedISO, ...restrictedISO]
-    // Update filters on the vector-tile-based country layers
-    if (map.getLayer('airspace-closure-fill')) {
-      map.setFilter('airspace-closure-fill', allISO.length > 0
-        ? ['in', ['get', 'iso_3166_1'], ['literal', allISO]]
-        : ['==', 'iso_3166_1', '__none__'])
-      map.setPaintProperty('airspace-closure-fill', 'fill-color',
-        closedISO.length > 0 && restrictedISO.length > 0
-          ? ['match', ['get', 'iso_3166_1'],
-              ...closedISO.flatMap(c => [c, 'rgba(220,38,38,0.25)']),
-              ...restrictedISO.flatMap(c => [c, 'rgba(245,158,11,0.18)']),
-              'rgba(0,0,0,0)']
-          : closedISO.length > 0
-            ? 'rgba(220,38,38,0.25)'
-            : 'rgba(245,158,11,0.18)')
-    }
-    if (map.getLayer('airspace-closure-line')) {
-      map.setFilter('airspace-closure-line', allISO.length > 0
-        ? ['in', ['get', 'iso_3166_1'], ['literal', allISO]]
-        : ['==', 'iso_3166_1', '__none__'])
-      map.setPaintProperty('airspace-closure-line', 'line-color',
-        closedISO.length > 0 && restrictedISO.length > 0
-          ? ['match', ['get', 'iso_3166_1'],
-              ...closedISO.flatMap(c => [c, 'rgba(220,38,38,0.7)']),
-              ...restrictedISO.flatMap(c => [c, 'rgba(245,158,11,0.5)']),
-              'rgba(0,0,0,0)']
-          : closedISO.length > 0
-            ? 'rgba(220,38,38,0.7)'
-            : 'rgba(245,158,11,0.5)')
-    }
+    // Update GeoJSON airspace closure overlay
+    const closureGeoJSON = toGeoJSONAirspaceClosure(closedFirs, restrictedFirs, FIR_BOUNDARIES)
+    map.getSource('airspace-closure-source')?.setData(closureGeoJSON)
   }, [])
 
   const clearMapData = useCallback(() => {
@@ -313,30 +284,32 @@ export default function App() {
       map.on('mouseenter', 'fire-click-layer', () => { map.getCanvas().style.cursor = 'pointer' })
       map.on('mouseleave', 'fire-click-layer', () => { map.getCanvas().style.cursor = '' })
 
-      // ── Airspace closure overlay — Mapbox country boundaries vector tile ──
-      map.addSource('country-boundaries', {
-        type: 'vector',
-        url: 'mapbox://mapbox.country-boundaries-v1',
+      // ── Airspace closure overlay — GeoJSON FIR polygons ──
+      map.addSource('airspace-closure-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
       })
       map.addLayer({
         id: 'airspace-closure-fill',
         type: 'fill',
-        source: 'country-boundaries',
-        'source-layer': 'country_boundaries',
-        filter: ['==', 'iso_3166_1', '__none__'],  // hidden initially
+        source: 'airspace-closure-source',
         paint: {
-          'fill-color': 'rgba(220,38,38,0.25)',
+          'fill-color': ['match', ['get', 'severity'],
+            'CLOSED', 'rgba(220,38,38,0.25)',
+            'RESTRICTED', 'rgba(245,158,11,0.18)',
+            'rgba(0,0,0,0)'],
           'fill-opacity': 1,
         },
       })
       map.addLayer({
         id: 'airspace-closure-line',
         type: 'line',
-        source: 'country-boundaries',
-        'source-layer': 'country_boundaries',
-        filter: ['==', 'iso_3166_1', '__none__'],
+        source: 'airspace-closure-source',
         paint: {
-          'line-color': 'rgba(220,38,38,0.7)',
+          'line-color': ['match', ['get', 'severity'],
+            'CLOSED', 'rgba(220,38,38,0.7)',
+            'RESTRICTED', 'rgba(245,158,11,0.5)',
+            'rgba(0,0,0,0)'],
           'line-width': 2,
           'line-dasharray': [4, 3],
         },
@@ -674,10 +647,13 @@ export default function App() {
     socket.on('airspace:update', (status) => {
       if (!status || typeof status !== 'object') return
       airspaceStatusRef.current = { ...airspaceStatusRef.current, ...status }
+      // Apply immediately if map+airports ready, otherwise store for later
       const map = mapInstanceRef.current
       if (map?.isStyleLoaded() && airportDataRef.current.length > 0) {
         applyAirports(airportDataRef.current, map)
       }
+      // If airports came but map wasn't ready, pendingAirportsRef handles it
+      // If airspace came first, airports:update handler will call applyAirports with merged status
     })
 
     return () => {

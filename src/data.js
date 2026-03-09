@@ -85,6 +85,22 @@ export function toGeoJSONEmbassies(embassies) {
   }
 }
 
+export function toGeoJSONAirspaceClosure(closedFirs, restrictedFirs, FIR_BOUNDARIES) {
+  const features = []
+  for (const [fir, coords] of Object.entries(FIR_BOUNDARIES)) {
+    let severity = null
+    if (closedFirs.includes(fir)) severity = 'CLOSED'
+    else if (restrictedFirs.includes(fir)) severity = 'RESTRICTED'
+    if (!severity) continue
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [coords.map(c => [c[0], c[1]])] },
+      properties: { fir, severity },
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
 export function toGeoJSONFires(data) {
   return {
     type: 'FeatureCollection',
