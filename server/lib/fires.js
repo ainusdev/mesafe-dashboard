@@ -345,10 +345,18 @@ const SOURCES = [
   'MODIS_NRT',
 ]
 
+/** Race each source against a 45s hard timeout so one slow source can't block the whole cycle */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ])
+}
+
 async function fetchFIRMS() {
   const [firmsResult, eumetsatResult] = await Promise.allSettled([
-    fetchAllFIRMS(),
-    fetchEUMETSAT(),
+    withTimeout(fetchAllFIRMS(), 45000, 'FIRMS'),
+    withTimeout(fetchEUMETSAT(), 45000, 'EUMETSAT'),
   ])
 
   const allFires = []

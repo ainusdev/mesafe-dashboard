@@ -1,9 +1,10 @@
 # MESAFE — Middle East Safety Dashboard
 
 Real-time conflict monitoring dashboard for the Middle East.
-Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS), airport data, and simulation mode.
+Aircraft tracking (ADS-B), fire hotspots (NASA FIRMS + EUMETSAT MTG), airport data, and simulation mode.
 
 **Live:** https://mesafe.ainus.dev
+**Repository:** https://github.com/ainusdev/mesafe-dashboard
 
 ---
 
@@ -46,6 +47,8 @@ VITE_BACKEND_RELEASE_URL=https://api.mesafe.ainus.dev
 OPENSKY_CLIENT_ID=...
 OPENSKY_CLIENT_SECRET=...
 NASA_FIRMS_MAP_KEY=...
+EUMETSAT_CONSUMER_KEY=...
+EUMETSAT_CONSUMER_SECRET=...
 FIREBASE_SERVICE_ACCOUNT=./serviceAccount.json
 PORT=3001
 
@@ -82,8 +85,11 @@ GET /api/health
 | Source | Default Interval | Notes |
 |--------|----------|-------|
 | OpenSky Network (ADS-B) | 5min + jitter | OAuth — may time out from cloud IPs |
-| NASA FIRMS VIIRS 375m | 5min + jitter | Bounding box: Middle East (29°–60°E, 22°–42°N) |
+| NASA FIRMS (VIIRS SNPP + NOAA-20 + MODIS) | 5min + jitter | 3 satellite sources merged, low-confidence filtered |
+| EUMETSAT MTG (Meteosat FCI-2 CAP) | 5min + jitter | 10-min geostationary, OAuth2 auto-renewal |
 | OurAirports (CSV) | On startup / on-demand | Large + medium airports |
+
+Each fire source runs in parallel with a 45s hard timeout — one slow or failing source never blocks others.
 
 ---
 
@@ -91,7 +97,7 @@ GET /api/health
 
 ### Live Mode (default)
 - Real-time aircraft positions via ADS-B (OpenSky Network)
-- Fire hotspots from NASA FIRMS satellite data
+- Fire hotspots from NASA FIRMS + EUMETSAT satellite data
 - Airport data from OurAirports
 - Connection status indicator (LIVE / CONNECTING / MOCK)
 - Auto-fallback to mock data if backend is unreachable
@@ -103,20 +109,21 @@ GET /api/health
 - Region change during simulation immediately reseeds data
 
 ### Map Layers
-- **Aircraft** — SVG icons rotating by heading; military (red), suspected (yellow), civilian (green)
-- **Fires** — heatmap (zoom < 9), FRP-scaled circles (zoom ≥ 9) with color gradient (blue → yellow → red)
+- **Aircraft** — ✈️ emoji icons rotating by heading; callsign text below; country flag above
+- **Fires** — heatmap (zoom < 9), 🔥 emoji icons (zoom ≥ 9)
 - **Airports** — large airports visible by default; medium/small airports toggleable
-- Country flag icons above each aircraft (fetched from flagcdn.com)
-- Callsign text below each aircraft icon
 
 ### Fire Hotspot Details
-- FRP-based circle sizing and coloring for visual intensity distinction
-- Cluster popup: clicking overlapping hotspots shows aggregate stats (total/max/avg FRP, intensity breakdown, assessment)
-- Korean-language FIRMS guide linked from fire popup (`/guide/firms.html`)
+- FRP-based sizing for visual intensity distinction
+- Cluster popup: clicking overlapping hotspots shows aggregate stats (total/max/avg FRP, intensity breakdown)
+- 4 data sources: VIIRS SNPP, VIIRS NOAA-20, MODIS, EUMETSAT MTG
+- Low-confidence detections auto-filtered
+- Cross-source deduplication (~500m proximity)
 
 ### Fire Time Window Filter
 Filter hotspots by acquisition time: **1H / 6H / 12H / 24H**
 Uses GPU-side `map.setFilter()` for instant response.
+Selection persists across page refreshes.
 
 ### Aircraft Filter
 Filter by type: **ALL / MILITARY / CIVILIAN**
@@ -136,7 +143,7 @@ Filter by type: **ALL / MILITARY / CIVILIAN**
 - Hourly sync at :00
 
 ### Firestore
-- On startup, fires are **always** merged from Firestore to ensure full 24h coverage (VIIRS satellite pass timing can cause partial API results)
+- On startup, fires are **always** merged from Firestore to ensure full 24h coverage (satellite pass timing can cause partial API results)
 - Aircraft and airports restored from Firestore only when CSV cache is empty
 
 ---
