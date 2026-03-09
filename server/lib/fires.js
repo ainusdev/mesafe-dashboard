@@ -431,4 +431,4 @@ function deduplicateFires(fires) {
   return kept
 }
 
-module.exports = { fetchFIRMS }
+module.exports = { fetchFIRMS, deduplicateFires }

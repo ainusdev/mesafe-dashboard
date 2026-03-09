@@ -45,6 +45,8 @@ const BROADCAST_MS = parseInt(process.env.SOCKET_BROADCAST_INTERVAL_MS) || 300_0
 let aircraftData = loadAircraftCache()
 let fireData     = loadFiresCache()
 let airportData  = loadAirportsCache()
+const debugLog   = []   // 최근 에러/이벤트 캡쳐 (최대 50개)
+function dlog(msg) { debugLog.push(`${new Date().toISOString()} ${msg}`); if (debugLog.length > 50) debugLog.shift() }
 
 // ─── 핵심 로직: 부트스트랩 ───────────────────────────────────────────────────
 
@@ -112,9 +114,9 @@ function startPollingCycles() {
     }, next)
   }
 
-  doFetchAirports().catch(() => {})
-  doFetchAircraft().catch(() => {})
-  doFetchFIRMS().catch(() => {})
+  doFetchAirports().catch(e => dlog(`airports err: ${e.message}`))
+  doFetchAircraft().catch(e => dlog(`aircraft err: ${e.message}`))
+  doFetchFIRMS().catch(e => dlog(`fires err: ${e.message}`))
 
   schedule(doFetchAircraft, acInt, 'OpenSky')
   schedule(doFetchFIRMS, fiInt, 'FIRMS')
@@ -122,6 +124,7 @@ function startPollingCycles() {
 
 async function doFetchAircraft() {
   const data = await fetchAircraft()
+  dlog(`aircraft fetch: ${data.length} items`)
   if (data.length > 0) {
     aircraftData = data
     io.emit('aircraft:update', aircraftData)
@@ -129,10 +132,19 @@ async function doFetchAircraft() {
 }
 
 async function doFetchFIRMS() {
-  const data = await fetchFIRMS()
-  if (data.length > 0) {
-    fireData = deduplicateFires(loadFiresCache())
-    io.emit('fires:update', fireData)
+  try {
+    const data = await fetchFIRMS()
+    dlog(`fires fetch: ${data.length} items`)
+    if (data.length > 0) {
+      fireData = deduplicateFires(loadFiresCache())
+      dlog(`fires after dedup+cache: ${fireData.length}`)
+      io.emit('fires:update', fireData)
+    } else {
+      dlog('fires fetch returned 0')
+    }
+  } catch (err) {
+    dlog(`fires fetch ERROR: ${err.message}`)
+    throw err
   }
 }
 
