@@ -8,10 +8,27 @@ import { formatTZ } from './utils.js'
 import { preloadAllFlags } from './flags.js'
 import { loadMapIcons } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
-import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires, toGeoJSONBases, toGeoJSONEmbassies, toGeoJSONAirspaceClosure } from './data.js'
+import * as topojson from 'topojson-client'
+import countriesTopo from 'world-atlas/countries-110m.json'
+import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires, toGeoJSONBases, toGeoJSONEmbassies } from './data.js'
 import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML, buildBasePopupHTML, buildEmbassyPopupHTML } from './popups.js'
-import { MILITARY_BASES, EMBASSIES, EMERGENCY_CONTACTS, AIRPORT_STATUS as DEFAULT_AIRPORT_STATUS, REGION_COUNTRY, SHELTER_GUIDE, buildIcaoToFir, FIR_BOUNDARIES } from './facilities.js'
+import { MILITARY_BASES, EMBASSIES, EMERGENCY_CONTACTS, AIRPORT_STATUS as DEFAULT_AIRPORT_STATUS, REGION_COUNTRY, SHELTER_GUIDE, buildIcaoToFir, FIR_TO_ISO } from './facilities.js'
 import { computeProximityAlerts } from './alerts.js'
+
+// ─── Country polygons (Natural Earth 50m via world-atlas) ──────────────────
+const ISO_NUMERIC_TO_FIR = {
+  '784': 'UAE', '682': 'SAUDI', '414': 'KUWAIT', '634': 'QATAR', '048': 'BAHRAIN',
+  '512': 'OMAN', '368': 'IRAQ', '364': 'IRAN', '400': 'JORDAN', '422': 'LEBANON',
+  '376': 'ISRAEL', '792': 'TURKEY', '887': 'YEMEN', '760': 'SYRIA',
+}
+const ME_NUMERIC_IDS = new Set(Object.keys(ISO_NUMERIC_TO_FIR))
+const allCountriesGeo = topojson.feature(countriesTopo, countriesTopo.objects.countries)
+const meCountriesGeo = {
+  type: 'FeatureCollection',
+  features: allCountriesGeo.features
+    .filter(f => ME_NUMERIC_IDS.has(f.id))
+    .map(f => ({ ...f, properties: { ...f.properties, fir: ISO_NUMERIC_TO_FIR[f.id] } })),
+}
 
 // ─── App ───────────────────────────────────────────────────────────────────
 
@@ -64,6 +81,7 @@ export default function App() {
   const animCurrentRef = useRef({})
   const animToRef = useRef([])
   const pendingAirportsRef = useRef(null)
+  const mapStyleReadyRef = useRef(false)
   const airportDataRef = useRef([])
   const airspaceStatusRef = useRef(DEFAULT_AIRPORT_STATUS)
 
@@ -98,7 +116,7 @@ export default function App() {
     // In live mode, animation loop handles aircraft-source rendering
     if (dataModeRef.current === 'live') return
     const map = mapInstanceRef.current
-    if (!map?.isStyleLoaded()) return
+    if (!map || !mapStyleReadyRef.current) return
     map.getSource('aircraft-source')?.setData(toGeoJSONAircraft(filtered))
   }, [])
 
@@ -131,19 +149,30 @@ export default function App() {
       if (st === 'CLOSED') firCounts[fir].closed++
       else if (st === 'RESTRICTED') firCounts[fir].restricted++
     }
-    const closedFirs = [], restrictedFirs = []
+    const closedFirs = new Set(), restrictedFirs = new Set()
     for (const [fir, c] of Object.entries(firCounts)) {
       if (c.total === 0) continue
       const nonOpenPct = (c.closed + c.restricted) / c.total
       const hasOpen = c.total - c.closed - c.restricted > 0
       if (nonOpenPct >= 0.2 && !hasOpen) {
-        closedFirs.push(fir)          // ≥20% non-open AND no open airports → red
+        closedFirs.add(fir)           // ≥20% non-open AND no open airports → red
       } else if (nonOpenPct >= 0.2 && hasOpen) {
-        restrictedFirs.push(fir)      // ≥20% non-open BUT has open → amber
+        restrictedFirs.add(fir)       // ≥20% non-open BUT has open → amber
       }
     }
-    // Update GeoJSON airspace closure overlay
-    const closureGeoJSON = toGeoJSONAirspaceClosure(closedFirs, restrictedFirs, FIR_BOUNDARIES)
+    // Update country polygon overlay using Natural Earth boundaries
+    const closureGeoJSON = {
+      type: 'FeatureCollection',
+      features: meCountriesGeo.features
+        .filter(f => closedFirs.has(f.properties.fir) || restrictedFirs.has(f.properties.fir))
+        .map(f => ({
+          ...f,
+          properties: {
+            ...f.properties,
+            severity: closedFirs.has(f.properties.fir) ? 'CLOSED' : 'RESTRICTED',
+          },
+        })),
+    }
     map.getSource('airspace-closure-source')?.setData(closureGeoJSON)
   }, [])
 
@@ -563,6 +592,7 @@ export default function App() {
         if (map.getLayer(id)) map.setFilter(id, initFilter)
       }
 
+      mapStyleReadyRef.current = true
       setMapLoaded(true)
       preloadAllFlags(map)
     })
@@ -637,7 +667,7 @@ export default function App() {
       if (!data?.length) return
       airportDataRef.current = data
       const map = mapInstanceRef.current
-      if (!map?.isStyleLoaded()) {
+      if (!map || !mapStyleReadyRef.current) {
         pendingAirportsRef.current = data
         return
       }
@@ -647,13 +677,10 @@ export default function App() {
     socket.on('airspace:update', (status) => {
       if (!status || typeof status !== 'object') return
       airspaceStatusRef.current = { ...airspaceStatusRef.current, ...status }
-      // Apply immediately if map+airports ready, otherwise store for later
       const map = mapInstanceRef.current
-      if (map?.isStyleLoaded() && airportDataRef.current.length > 0) {
+      if (map && mapStyleReadyRef.current && airportDataRef.current.length > 0) {
         applyAirports(airportDataRef.current, map)
       }
-      // If airports came but map wasn't ready, pendingAirportsRef handles it
-      // If airspace came first, airports:update handler will call applyAirports with merged status
     })
 
     return () => {
