@@ -54,6 +54,37 @@ export function toGeoJSONAircraft(data) {
   }
 }
 
+export function toGeoJSONBases(bases) {
+  return {
+    type: 'FeatureCollection',
+    features: bases.map(b => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: b.coords },
+      properties: {
+        id: b.id, name: b.name, country: b.country,
+        type: b.type, operator: b.operator,
+        dangerRadiusKm: b.dangerRadiusKm,
+      },
+    })),
+  }
+}
+
+export function toGeoJSONEmbassies(embassies) {
+  return {
+    type: 'FeatureCollection',
+    features: embassies.map(e => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: e.coords },
+      properties: {
+        id: e.id, name: e.name, country: e.country,
+        type: e.type, address: e.address,
+        phone: e.phone, emergency: e.emergency,
+        website: e.website || '',
+      },
+    })),
+  }
+}
+
 export function toGeoJSONFires(data) {
   return {
     type: 'FeatureCollection',

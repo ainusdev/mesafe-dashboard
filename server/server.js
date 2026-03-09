@@ -10,8 +10,7 @@ const path   = require('path')
 const { log }                                     = require('./lib/logger')
 const { loadAircraftCache, loadFiresCache, loadAirportsCache,
         saveAircraftCache, saveFiresCache, saveAirportsCache,
-        latestCacheFile,
-        uploadAllCsvToStorage, scheduleHourlyStorageSync } = require('./lib/cache')
+        latestCacheFile } = require('./lib/cache')
 const { initFirestore,
         saveAircraftToFirestore, saveFiresToFirestore, saveAirportsToFirestore,
         loadAircraftFromFirestore, loadFiresFromFirestore, loadAirportsFromFirestore,
@@ -19,6 +18,7 @@ const { initFirestore,
 const { fetchAirports }                           = require('./lib/airports')
 const { fetchAircraft }                           = require('./lib/aircraft')
 const { fetchFIRMS, deduplicateFires }             = require('./lib/fires')
+const { fetchAirspaceStatus, getCachedAirspaceStatus }  = require('./lib/notam')
 
 // ─── Express + Socket.io ──────────────────────────────────────────────────────
 
@@ -42,10 +42,11 @@ const BROADCAST_MS = parseInt(process.env.SOCKET_BROADCAST_INTERVAL_MS) || 300_0
 
 // ─── 데이터 상태 ─────────────────────────────────────────────────────────────
 
-let aircraftData = loadAircraftCache()
-let fireData     = loadFiresCache()
-let airportData  = loadAirportsCache()
-const debugLog   = []   // 최근 에러/이벤트 캡쳐 (최대 50개)
+let aircraftData   = loadAircraftCache()
+let fireData       = loadFiresCache()
+let airportData    = loadAirportsCache()
+let airspaceStatus = getCachedAirspaceStatus() || null   // load from CSV cache on boot
+const debugLog     = []     // 최근 에러/이벤트 캡쳐 (최대 50개)
 function dlog(msg) { debugLog.push(`${new Date().toISOString()} ${msg}`); if (debugLog.length > 50) debugLog.shift() }
 
 // ─── 핵심 로직: 부트스트랩 ───────────────────────────────────────────────────
@@ -55,7 +56,6 @@ async function bootstrap() {
     // [보완] Firestore 인증 에러가 나도 서버가 죽지 않도록 방어
     try {
       initFirestore()
-      scheduleHourlyStorageSync()
 
       const needAircraft = aircraftData.length === 0
       const needAirports = airportData.length === 0
@@ -104,6 +104,7 @@ async function bootstrap() {
 function startPollingCycles() {
   const acInt = parseInt(process.env.AIRCRAFT_INTERVAL_MS) || 300_000
   const fiInt = parseInt(process.env.FIRMS_INTERVAL_MS) || 300_000
+  const asInt = parseInt(process.env.AIRSPACE_INTERVAL_MS) || 60_000
   const jitterMult = parseFloat(process.env.INTERVAL_JITTER_MULTIPLIER) || 3
 
   const schedule = (fn, baseMs, tag) => {
@@ -117,9 +118,11 @@ function startPollingCycles() {
   doFetchAirports().catch(e => dlog(`airports err: ${e.message}`))
   doFetchAircraft().catch(e => dlog(`aircraft err: ${e.message}`))
   doFetchFIRMS().catch(e => dlog(`fires err: ${e.message}`))
+  doFetchAirspace().catch(e => dlog(`airspace err: ${e.message}`))
 
   schedule(doFetchAircraft, acInt, 'OpenSky')
   schedule(doFetchFIRMS, fiInt, 'FIRMS')
+  schedule(doFetchAirspace, asInt, 'Airspace')
 }
 
 async function doFetchAircraft() {
@@ -127,6 +130,8 @@ async function doFetchAircraft() {
   dlog(`aircraft fetch: ${data.length} items`)
   if (data.length > 0) {
     aircraftData = data
+    const bytes = JSON.stringify(aircraftData).length
+    log('Socket', `emit aircraft:update → ${aircraftData.length} items (${(bytes / 1024).toFixed(1)} KB) → ${io.engine.clientsCount} clients`)
     io.emit('aircraft:update', aircraftData)
   }
 }
@@ -138,6 +143,8 @@ async function doFetchFIRMS() {
     if (data.length > 0) {
       fireData = deduplicateFires(loadFiresCache())
       dlog(`fires after dedup+cache: ${fireData.length}`)
+      const bytes = JSON.stringify(fireData).length
+      log('Socket', `emit fires:update → ${fireData.length} items (${(bytes / 1024).toFixed(1)} KB) → ${io.engine.clientsCount} clients`)
       io.emit('fires:update', fireData)
     } else {
       dlog('fires fetch returned 0')
@@ -156,15 +163,32 @@ async function doFetchAirports() {
   }
 }
 
+async function doFetchAirspace() {
+  try {
+    const status = await fetchAirspaceStatus()
+    if (status) {
+      airspaceStatus = status
+      const bytes = (JSON.stringify(status).length / 1024).toFixed(1)
+      log('Socket', `emit airspace:update → ${Object.keys(status).length} airports (${bytes}KB) → ${io.engine.clientsCount} clients`)
+      io.emit('airspace:update', airspaceStatus)
+      dlog(`airspace fetch: ${Object.keys(status).length} airports`)
+    }
+  } catch (err) {
+    dlog(`airspace fetch ERROR: ${err.message}`)
+  }
+}
+
 // ─── Socket.io 이벤트 및 브로드캐스트 ───────────────────────────────────────────
 
 // 안전망 브로드캐스트 — fetch 주기에서 이미 push하므로 여기선 긴 주기(5분)로 보험용
 // airports는 거의 변하지 않으므로 여기서 제외 (data:init에서만 전송)
 setInterval(() => {
   if (io.engine.clientsCount > 0) {
+    const acBytes = (JSON.stringify(aircraftData).length / 1024).toFixed(1)
+    const frBytes = (JSON.stringify(fireData).length / 1024).toFixed(1)
+    log('Socket', `Safety broadcast → ${io.engine.clientsCount} clients | aircraft:${aircraftData.length}(${acBytes}KB) fires:${fireData.length}(${frBytes}KB)`)
     io.emit('aircraft:update', aircraftData)
     io.emit('fires:update', fireData)
-    log('Socket', `Safety broadcast → clients:${io.engine.clientsCount}`)
   }
 }, BROADCAST_MS)
 
@@ -174,9 +198,17 @@ io.on('connection', (socket) => {
   log('Socket', `Client connected: ${socket.id}`)
 
   socket.on('data:init', async () => {
+    const sizes = {
+      airports: (JSON.stringify(airportData).length / 1024).toFixed(1),
+      aircraft: (JSON.stringify(aircraftData).length / 1024).toFixed(1),
+      fires:    (JSON.stringify(fireData).length / 1024).toFixed(1),
+      airspace: airspaceStatus ? (JSON.stringify(airspaceStatus).length / 1024).toFixed(1) : '0',
+    }
+    log('Socket', `data:init → ${socket.id} | airports:${airportData.length}(${sizes.airports}KB) aircraft:${aircraftData.length}(${sizes.aircraft}KB) fires:${fireData.length}(${sizes.fires}KB) airspace:${sizes.airspace}KB`)
     socket.emit('airports:update', airportData)
     socket.emit('aircraft:update', aircraftData)
     socket.emit('fires:update', fireData)
+    if (airspaceStatus) socket.emit('airspace:update', airspaceStatus)
 
     if (airportData.length === 0 && !fetchLock.airports) {
       fetchLock.airports = true
@@ -200,12 +232,13 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     uptime: Math.floor(process.uptime()),
     connections: io.engine.clientsCount,
-    counts: { aircraft: aircraftData.length, fires: fireData.length },
+    counts: { aircraft: aircraftData.length, fires: fireData.length, airspaceTracked: airspaceStatus ? Object.keys(airspaceStatus).length : 0 },
   })
 })
 
 app.get('/api/aircraft',    (req, res) => res.json(aircraftData))
 app.get('/api/fires',       (req, res) => res.json(fireData))
 app.get('/api/airports/me', (req, res) => res.json(airportData))
+app.get('/api/airspace',    (req, res) => res.json(airspaceStatus || {}))
 
 bootstrap()

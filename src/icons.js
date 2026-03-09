@@ -68,4 +68,10 @@ export function loadMapIcons(map) {
   if (!map.hasImage('fire-emoji')) {
     map.addImage('fire-emoji', makeEmojiIcon('🔥', { fontSize: 0.6 }), { pixelRatio: 2 })
   }
+  if (!map.hasImage('base-marker')) {
+    map.addImage('base-marker', makeEmojiIcon('🎯', { fontSize: 0.55 }), { pixelRatio: 2 })
+  }
+  if (!map.hasImage('embassy-marker')) {
+    map.addImage('embassy-marker', makeEmojiIcon('🏛', { fontSize: 0.55 }), { pixelRatio: 2 })
+  }
 }

@@ -8,8 +8,10 @@ import { formatTZ } from './utils.js'
 import { preloadAllFlags } from './flags.js'
 import { loadMapIcons } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
-import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires } from './data.js'
-import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML } from './popups.js'
+import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires, toGeoJSONBases, toGeoJSONEmbassies } from './data.js'
+import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML, buildBasePopupHTML, buildEmbassyPopupHTML } from './popups.js'
+import { MILITARY_BASES, EMBASSIES, EMERGENCY_CONTACTS, AIRPORT_STATUS as DEFAULT_AIRPORT_STATUS, REGION_COUNTRY, SHELTER_GUIDE, buildIcaoToFir, FIR_TO_ISO } from './facilities.js'
+import { computeProximityAlerts } from './alerts.js'
 
 // ─── App ───────────────────────────────────────────────────────────────────
 
@@ -17,11 +19,20 @@ export default function App() {
   const [activeRegion, setActiveRegion] = useState(() => {
     // Preserve only region selection; clear everything else on load
     const saved = localStorage.getItem('mesafe_region')
-    const keepKeys = new Set(['mesafe_region', 'mesafe_fire_hours'])
+    const keepKeys = new Set(['mesafe_region', 'mesafe_fire_hours', 'mesafe_layers'])
     Object.keys(localStorage).forEach(k => { if (!keepKeys.has(k)) localStorage.removeItem(k) })
     return (saved && REGIONS[saved]) ? saved : 'IRAN'
   })
-  const [layers, setLayers] = useState({ aircraft: true, fires: true, airports: true, airportsOther: false })
+  const [layers, setLayers] = useState(() => {
+    const defaults = { aircraft: true, fires: true, airports: true, airportsOther: false, bases: true, embassies: true }
+    try {
+      const saved = JSON.parse(localStorage.getItem('mesafe_layers'))
+      if (saved && typeof saved === 'object') return { ...defaults, ...saved }
+    } catch {}
+    return defaults
+  })
+  const [alerts, setAlerts] = useState([])
+  const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [counts, setCounts] = useState({ aircraft: 0, fires: 0 })
   const [fireHoursFilter, setFireHoursFilter] = useState(() => {
     const saved = parseInt(localStorage.getItem('mesafe_fire_hours'), 10)
@@ -53,6 +64,8 @@ export default function App() {
   const animCurrentRef = useRef({})
   const animToRef = useRef([])
   const pendingAirportsRef = useRef(null)
+  const airportDataRef = useRef([])
+  const airspaceStatusRef = useRef(DEFAULT_AIRPORT_STATUS)
 
   useEffect(() => { activeRegionRef.current = activeRegion }, [activeRegion])
   useEffect(() => { aircraftFilterRef.current = aircraftFilter }, [aircraftFilter])
@@ -60,6 +73,7 @@ export default function App() {
   useEffect(() => { dataModeRef.current = dataMode }, [dataMode])
   useEffect(() => { mockStateRef.current = mockState }, [mockState])
   useEffect(() => { localStorage.setItem('mesafe_region', activeRegion) }, [activeRegion])
+  useEffect(() => { localStorage.setItem('mesafe_layers', JSON.stringify(layers)) }, [layers])
 
   // ── Stable helpers ────────────────────────────────────────────────────────
 
@@ -89,17 +103,77 @@ export default function App() {
   }, [])
 
   const applyAirports = useCallback((data, map) => {
+    const asRef = airspaceStatusRef.current
     map.getSource('airport-source')?.setData({
       type: 'FeatureCollection',
-      features: data.map(a => ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: a.coords },
-        properties: {
-          id: a.id, name: a.name, iata: a.iata, icao: a.icao,
-          type: a.type, municipality: a.municipality, elevation: a.elevation,
-        },
-      })),
+      features: data.map(a => {
+        const st = asRef[a.icao]
+        return {
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: a.coords },
+          properties: {
+            id: a.id, name: a.name, iata: a.iata, icao: a.icao,
+            type: a.type, municipality: a.municipality, elevation: a.elevation,
+            opStatus: st?.status || 'OPEN', opNote: st?.note || '',
+          },
+        }
+      }),
     })
+    // Update airspace closure overlay — only INTL (large_airport) with IATA count for country color
+    const intlIcaos = new Set(data.filter(a => a.type === 'large_airport' && a.iata).map(a => a.icao))
+    const icaoToFirMap = buildIcaoToFir(asRef)
+    const firCounts = {}  // { FIR: { total, closed, restricted } }
+    for (const [icao, fir] of Object.entries(icaoToFirMap)) {
+      if (!intlIcaos.has(icao)) continue  // skip non-INTL airports
+      if (!firCounts[fir]) firCounts[fir] = { total: 0, closed: 0, restricted: 0 }
+      firCounts[fir].total++
+      const st = asRef[icao]?.status
+      if (st === 'CLOSED') firCounts[fir].closed++
+      else if (st === 'RESTRICTED') firCounts[fir].restricted++
+    }
+    const closedISO = [], restrictedISO = []
+    for (const [fir, c] of Object.entries(firCounts)) {
+      const iso = FIR_TO_ISO[fir]
+      if (!iso || c.total === 0) continue
+      const nonOpenPct = (c.closed + c.restricted) / c.total
+      const hasOpen = c.total - c.closed - c.restricted > 0
+      if (nonOpenPct >= 0.2 && !hasOpen) {
+        closedISO.push(iso)          // ≥20% non-open AND no open airports → red
+      } else if (nonOpenPct >= 0.2 && hasOpen) {
+        restrictedISO.push(iso)      // ≥20% non-open BUT has open → amber
+      }
+      // else: non-open < 20% → no color
+    }
+    const allISO = [...closedISO, ...restrictedISO]
+    // Update filters on the vector-tile-based country layers
+    if (map.getLayer('airspace-closure-fill')) {
+      map.setFilter('airspace-closure-fill', allISO.length > 0
+        ? ['in', ['get', 'iso_3166_1'], ['literal', allISO]]
+        : ['==', 'iso_3166_1', '__none__'])
+      map.setPaintProperty('airspace-closure-fill', 'fill-color',
+        closedISO.length > 0 && restrictedISO.length > 0
+          ? ['match', ['get', 'iso_3166_1'],
+              ...closedISO.flatMap(c => [c, 'rgba(220,38,38,0.25)']),
+              ...restrictedISO.flatMap(c => [c, 'rgba(245,158,11,0.18)']),
+              'rgba(0,0,0,0)']
+          : closedISO.length > 0
+            ? 'rgba(220,38,38,0.25)'
+            : 'rgba(245,158,11,0.18)')
+    }
+    if (map.getLayer('airspace-closure-line')) {
+      map.setFilter('airspace-closure-line', allISO.length > 0
+        ? ['in', ['get', 'iso_3166_1'], ['literal', allISO]]
+        : ['==', 'iso_3166_1', '__none__'])
+      map.setPaintProperty('airspace-closure-line', 'line-color',
+        closedISO.length > 0 && restrictedISO.length > 0
+          ? ['match', ['get', 'iso_3166_1'],
+              ...closedISO.flatMap(c => [c, 'rgba(220,38,38,0.7)']),
+              ...restrictedISO.flatMap(c => [c, 'rgba(245,158,11,0.5)']),
+              'rgba(0,0,0,0)']
+          : closedISO.length > 0
+            ? 'rgba(220,38,38,0.7)'
+            : 'rgba(245,158,11,0.5)')
+    }
   }, [])
 
   const clearMapData = useCallback(() => {
@@ -139,6 +213,9 @@ export default function App() {
     mapInstanceRef.current = map
 
     map.on('load', () => {
+      // ── Icons (must load before layers that reference them) ──
+      loadMapIcons(map)
+
       // ── Popup ──
       const popup = new mapboxgl.Popup({ className: 'military-popup', closeButton: true, maxWidth: '300px' })
       popupRef.current = popup
@@ -236,6 +313,35 @@ export default function App() {
       map.on('mouseenter', 'fire-click-layer', () => { map.getCanvas().style.cursor = 'pointer' })
       map.on('mouseleave', 'fire-click-layer', () => { map.getCanvas().style.cursor = '' })
 
+      // ── Airspace closure overlay — Mapbox country boundaries vector tile ──
+      map.addSource('country-boundaries', {
+        type: 'vector',
+        url: 'mapbox://mapbox.country-boundaries-v1',
+      })
+      map.addLayer({
+        id: 'airspace-closure-fill',
+        type: 'fill',
+        source: 'country-boundaries',
+        'source-layer': 'country_boundaries',
+        filter: ['==', 'iso_3166_1', '__none__'],  // hidden initially
+        paint: {
+          'fill-color': 'rgba(220,38,38,0.25)',
+          'fill-opacity': 1,
+        },
+      })
+      map.addLayer({
+        id: 'airspace-closure-line',
+        type: 'line',
+        source: 'country-boundaries',
+        'source-layer': 'country_boundaries',
+        filter: ['==', 'iso_3166_1', '__none__'],
+        paint: {
+          'line-color': 'rgba(220,38,38,0.7)',
+          'line-width': 2,
+          'line-dasharray': [4, 3],
+        },
+      })
+
       // ── Airports (no icons needed — add immediately) ──
       map.addSource('airport-source', {
         type: 'geojson',
@@ -248,7 +354,11 @@ export default function App() {
         filter: ['==', ['get', 'type'], 'large_airport'],
         paint: {
           'circle-radius': 6,
-          'circle-color': '#60a5fa',
+          'circle-color': ['case',
+            ['!', ['has', 'iata']], '#6b7280',                   // no IATA → gray
+            ['==', ['get', 'iata'], ''], '#6b7280',              // empty IATA → gray
+            ['match', ['get', 'opStatus'],
+              'OPEN', '#4ade80', 'CLOSED', '#ef4444', 'RESTRICTED', '#fbbf24', '#60a5fa']],
           'circle-opacity': 0.9,
           'circle-stroke-width': 1,
           'circle-stroke-color': 'rgba(0,0,0,0.6)',
@@ -317,6 +427,110 @@ export default function App() {
         pendingAirportsRef.current = null
       }
 
+      // ── Military Bases ──
+      map.addSource('base-source', {
+        type: 'geojson',
+        data: toGeoJSONBases(MILITARY_BASES),
+      })
+      map.addLayer({
+        id: 'base-radius-layer',
+        type: 'circle',
+        source: 'base-source',
+        layout: { visibility: 'visible' },
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['zoom'],
+            4, 4,  6, 8,  8, 20,  10, 50,  12, 120,
+          ],
+          'circle-color': ['match', ['get', 'type'],
+            'air',     'rgba(251, 191, 36, 0.08)',
+            'naval',   'rgba(96, 165, 250, 0.08)',
+            'army',    'rgba(163, 163, 163, 0.08)',
+            'rgba(163, 163, 163, 0.08)',
+          ],
+          'circle-stroke-width': 1,
+          'circle-stroke-color': ['match', ['get', 'type'],
+            'air',     'rgba(251, 191, 36, 0.25)',
+            'naval',   'rgba(96, 165, 250, 0.25)',
+            'army',    'rgba(163, 163, 163, 0.25)',
+            'rgba(163, 163, 163, 0.25)',
+          ],
+        },
+      })
+      map.addLayer({
+        id: 'base-marker-layer',
+        type: 'symbol',
+        source: 'base-source',
+        layout: {
+          visibility: 'visible',
+          'icon-image': 'base-marker',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 6, 0.65, 8, 0.8, 12, 1.1],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'text-field': ['get', 'name'],
+          'text-font': ['literal', ['DIN Offc Pro Regular', 'Arial Unicode MS Regular']],
+          'text-size': 9,
+          'text-anchor': 'top',
+          'text-offset': [0, 1.2],
+          'text-optional': true,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': ['match', ['get', 'type'],
+            'air',     '#fbbf24',
+            'naval',   '#60a5fa',
+            'army',    '#a3a3a3',
+            '#a3a3a3',
+          ],
+          'text-halo-color': 'rgba(0,0,0,0.9)',
+          'text-halo-width': 1,
+        },
+      })
+      bindPopup('base-marker-layer', buildBasePopupHTML)
+
+      // ── Embassies ──
+      map.addSource('embassy-source', {
+        type: 'geojson',
+        data: toGeoJSONEmbassies(EMBASSIES),
+      })
+      map.addLayer({
+        id: 'embassy-marker-layer',
+        type: 'symbol',
+        source: 'embassy-source',
+        layout: {
+          visibility: 'visible',
+          'icon-image': 'embassy-marker',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 6, 0.65, 8, 0.8, 12, 1.1],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+        paint: {
+          'icon-opacity': 0.95,
+        },
+      })
+      map.addLayer({
+        id: 'embassy-label-layer',
+        type: 'symbol',
+        source: 'embassy-source',
+        minzoom: 8,
+        layout: {
+          visibility: 'visible',
+          'text-field': ['get', 'name'],
+          'text-font': ['literal', ['DIN Offc Pro Regular', 'Arial Unicode MS Regular']],
+          'text-size': 9,
+          'text-anchor': 'top',
+          'text-offset': [0, 1.2],
+          'text-optional': true,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#3b82f6',
+          'text-halo-color': 'rgba(0,0,0,0.9)',
+          'text-halo-width': 1,
+        },
+      })
+      bindPopup('embassy-marker-layer', buildEmbassyPopupHTML)
+
       // ── Aircraft (add source/layer immediately; icons load async) ──
       map.addSource('aircraft-source', {
         type: 'geojson',
@@ -364,9 +578,6 @@ export default function App() {
         },
       })
       bindPopup('aircraft-layer', buildAircraftPopupHTML)
-
-      // Icons load async — Mapbox auto-applies once added
-      loadMapIcons(map)
 
       // Apply any data already received before map loaded
       if (fireDataRef.current.length > 0) {
@@ -446,16 +657,27 @@ export default function App() {
         map.getSource('fire-source').setData(toGeoJSONFires(data))
       }
       applyFireFilter()
+      setAlerts(computeProximityAlerts(data, MILITARY_BASES))
     })
 
     socket.on('airports:update', (data) => {
       if (!data?.length) return
+      airportDataRef.current = data
       const map = mapInstanceRef.current
       if (!map?.isStyleLoaded()) {
         pendingAirportsRef.current = data
         return
       }
       applyAirports(data, map)
+    })
+
+    socket.on('airspace:update', (status) => {
+      if (!status || typeof status !== 'object') return
+      airspaceStatusRef.current = { ...airspaceStatusRef.current, ...status }
+      const map = mapInstanceRef.current
+      if (map?.isStyleLoaded() && airportDataRef.current.length > 0) {
+        applyAirports(airportDataRef.current, map)
+      }
     })
 
     return () => {
@@ -648,6 +870,7 @@ export default function App() {
       if (map?.getSource('fire-source')) {
         map.getSource('fire-source').setData(toGeoJSONFires(fireDataRef.current))
         applyFireFilter()
+        setAlerts(computeProximityAlerts(fireDataRef.current, MILITARY_BASES))
       }
     }, 10000)
   }
@@ -686,6 +909,8 @@ export default function App() {
       fires:        ['fire-heat-layer', 'fire-circle-layer', 'fire-click-layer'],
       airports:     ['airport-circle-layer', 'airport-label-layer'],
       airportsOther:['airport-other-circle-layer', 'airport-other-label-layer'],
+      bases:        ['base-radius-layer', 'base-marker-layer'],
+      embassies:    ['embassy-marker-layer', 'embassy-label-layer'],
     }
     Object.entries(layers).forEach(([key, visible]) => {
       layerMap[key]?.forEach(id => {
@@ -729,8 +954,12 @@ export default function App() {
           <span className="hidden md:block text-green-400/35 text-[10px] tracking-widest">MIDDLE EAST SAFETY</span>
         </div>
 
-        {/* Right: mode + connection badge */}
+        {/* Right: SOS + mode + connection badge */}
         <div className="flex items-center gap-2 shrink-0">
+          <button onClick={() => setEmergencyOpen(true)}
+            className="px-2 py-1 border border-red-500/50 bg-red-500/15 text-red-400 text-xs tracking-widest font-bold hover:bg-red-500/25 transition-all">
+            🆘
+          </button>
           {dataMode === 'live' ? (
             <div className={`flex items-center gap-1.5 px-2 py-1 border text-xs tracking-wider
               ${backendConnected
@@ -842,6 +1071,8 @@ export default function App() {
             { key: 'fires',         label: 'FIRE HOTSPOTS', count: counts.fires,    icon: '🔥' },
             { key: 'airports',      label: 'INTL AIRPORTS', count: null,            icon: '🛬' },
             { key: 'airportsOther', label: 'OTHER AIRPORTS', count: null,           icon: '🛩' },
+            { key: 'bases',         label: 'MIL. BASES',     count: null,            icon: '🎯' },
+            { key: 'embassies',     label: 'EMBASSIES',      count: null,            icon: '🏛' },
           ].map(({ key, label, count, icon }) => (
             <button key={key} onClick={() => toggleLayer(key)}
               className={`flex items-center justify-between px-3 py-2 border text-xs tracking-wide transition-all
@@ -924,11 +1155,6 @@ export default function App() {
                 }>{v}</span>
               </div>
             ))}
-            <a href="https://github.com/ainusdev/mesafe-dashboard" target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-2 mt-2 text-[10px] text-green-400/30 hover:text-green-400/60 transition-colors tracking-widest">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-              SOURCE CODE
-            </a>
           </div>
 
           {/* Data mode — bottom of sidebar */}
@@ -990,8 +1216,101 @@ export default function App() {
               <span className="text-green-400 text-sm tracking-widest animate-pulse">INITIALIZING MAP...</span>
             </div>
           )}
+          {/* Proximity alert banner — disabled */}
+
+          {/* Floating bottom-right links */}
+          <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2.5">
+            <a href="https://github.com/ainusdev/mesafe-dashboard" target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2.5 bg-zinc-900/90 border border-green-400/30 text-green-400/60 hover:text-green-400 hover:border-green-400/60 transition-all text-sm tracking-widest backdrop-blur-sm">
+              <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+              GitHub
+            </a>
+            <a href="https://buymeacoffee.com/ainus" target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2.5 bg-yellow-500 hover:bg-yellow-400 transition-all text-zinc-900 font-bold text-sm tracking-wider rounded-sm">
+              ☕ Buy me a coffee
+            </a>
+          </div>
         </div>
       </div>
+
+      {/* ── EMERGENCY INFO MODAL ── */}
+      {emergencyOpen && (() => {
+        const regionCountry = REGION_COUNTRY[activeRegion]
+        const localEmergency = EMERGENCY_CONTACTS.countries[regionCountry]
+        const regionEmbassies = EMBASSIES.filter(e => e.country === regionCountry)
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+            onClick={() => setEmergencyOpen(false)}>
+            <div className="bg-zinc-900 border border-red-500/40 w-[90%] max-w-md max-h-[85vh] overflow-y-auto p-5"
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4 pb-3 border-b border-red-500/30">
+                <span className="text-red-400 text-sm font-bold tracking-widest">🆘 긴급정보</span>
+                <button onClick={() => setEmergencyOpen(false)} className="text-zinc-400 hover:text-white text-lg">✕</button>
+              </div>
+
+              {/* Global */}
+              <div className="mb-4">
+                <div className="text-green-400/50 text-[10px] tracking-widest mb-2">영사콜센터 (24시간)</div>
+                <a href={`tel:${EMERGENCY_CONTACTS.global.phone}`}
+                  className="block px-3 py-2 border border-green-400/30 bg-green-400/5 text-green-300 text-sm font-bold tracking-wider">
+                  📞 {EMERGENCY_CONTACTS.global.phone}
+                </a>
+                <div className="text-zinc-500 text-[10px] mt-1">{EMERGENCY_CONTACTS.global.note}</div>
+              </div>
+
+              {/* Local emergency numbers */}
+              {localEmergency && (
+                <div className="mb-4">
+                  <div className="text-green-400/50 text-[10px] tracking-widest mb-2">현지 긴급번호 — {regionCountry}</div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {[
+                      ['🚔 경찰', localEmergency.police],
+                      ['🚑 구급', localEmergency.ambulance],
+                      ['🚒 소방', localEmergency.fire],
+                    ].map(([label, num]) => (
+                      <a key={label} href={`tel:${num}`}
+                        className="flex flex-col items-center py-2 border border-zinc-700 bg-zinc-800/50 text-xs">
+                        <span className="text-zinc-400 text-[10px]">{label}</span>
+                        <span className="text-white font-bold">{num}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Korean embassies in this region */}
+              {regionEmbassies.length > 0 && (
+                <div className="mb-4">
+                  <div className="text-blue-400/60 text-[10px] tracking-widest mb-2">한국 공관</div>
+                  {regionEmbassies.map(emb => (
+                    <div key={emb.id} className="border border-blue-400/20 bg-blue-400/5 p-3 mb-1">
+                      <div className="text-blue-300 text-xs font-bold mb-1">{emb.name}</div>
+                      <div className="text-zinc-400 text-[10px] mb-1">{emb.address}</div>
+                      <div className="flex gap-2 text-[10px]">
+                        <a href={`tel:${emb.phone}`} className="text-green-400">📞 {emb.phone}</a>
+                        <a href={`tel:${emb.emergency}`} className="text-red-400 font-bold">🚨 {emb.emergency}</a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Shelter guide */}
+              <div>
+                <div className="text-amber-400/60 text-[10px] tracking-widest mb-2">대피 요령</div>
+                <ul className="space-y-1">
+                  {SHELTER_GUIDE.map((tip, i) => (
+                    <li key={i} className="text-zinc-300 text-[11px] leading-relaxed flex gap-2">
+                      <span className="text-amber-400/50 shrink-0">▸</span>
+                      {tip}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
     </div>
   )

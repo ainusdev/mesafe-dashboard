@@ -4,76 +4,6 @@ const { log } = require('./logger')
 
 const CACHE_DIR = path.join(__dirname, '../cache')
 
-// ─── Firebase Storage upload ────────────────────────────────────────────────
-
-function getStorageBucket() {
-  try {
-    const admin = require('firebase-admin')
-    if (!admin.apps.length) return null
-    return admin.storage().bucket()
-  } catch { return null }
-}
-
-/**
- * Upload a local CSV to Firebase Storage.
- * Files with date in filename → csv/{type}/{YYYY-MM-DD}/{filename}
- * Files without date          → csv/{type}/{filename}
- */
-function storageDestPath(filename) {
-  const type = filename.split('_')[0] || filename.replace('.csv', '')
-  const dateMatch = filename.match(/_(\d{4}-\d{2}-\d{2})T/)
-  return dateMatch
-    ? `csv/${type}/${dateMatch[1]}/${filename}`
-    : `csv/${type}/${filename}`
-}
-
-function uploadToStorage(localPath) {
-  const bucket = getStorageBucket()
-  if (!bucket) return
-  const filename = path.basename(localPath)
-  const destPath = storageDestPath(filename)
-  bucket.upload(localPath, {
-    destination: destPath,
-    metadata: { contentType: 'text/csv' },
-  })
-    .then(() => log('Storage', `${filename} → ${destPath}`))
-    .catch(err => log('Storage', `Upload failed: ${err.message}`, 'warn'))
-}
-
-/** Upload all existing CSVs in cache dir to Storage. */
-function uploadAllCsvToStorage() {
-  const bucket = getStorageBucket()
-  if (!bucket) return
-  if (!fs.existsSync(CACHE_DIR)) return
-  const files = fs.readdirSync(CACHE_DIR).filter(f => f.endsWith('.csv'))
-  if (files.length === 0) return
-  log('Storage', `Uploading ${files.length} existing CSV files…`)
-  for (const f of files) {
-    const localPath = path.join(CACHE_DIR, f)
-    const destPath = storageDestPath(f)
-    bucket.upload(localPath, {
-      destination: destPath,
-      metadata: { contentType: 'text/csv' },
-    })
-      .then(() => log('Storage', `${f} → ${destPath}`))
-      .catch(err => log('Storage', `Upload failed (${f}): ${err.message}`, 'warn'))
-  }
-}
-
-/** Schedule uploadAllCsvToStorage to run every hour at :00. */
-function scheduleHourlyStorageSync() {
-  const now = new Date()
-  const next = new Date(now)
-  next.setMinutes(0, 0, 0)
-  next.setHours(next.getHours() + 1)
-  const delay = next.getTime() - now.getTime()
-  log('Storage', `Next hourly sync in ${Math.round(delay / 1000)}s (at ${next.toISOString().slice(11, 16)} UTC)`)
-  setTimeout(() => {
-    uploadAllCsvToStorage()
-    // After first run, repeat every hour
-    setInterval(uploadAllCsvToStorage, 3600_000)
-  }, delay)
-}
 
 function ensureCacheDir() {
   if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true })
@@ -156,7 +86,6 @@ function saveAircraftCache(aircraft) {
       ].join(','))
     }
     fs.writeFileSync(file, rows.join('\n'), 'utf8')
-    uploadToStorage(file)
     pruneAircraftCache()
     log('OpenSky', `Cache saved — ${aircraft.length} aircraft`)
   } catch (err) {
@@ -214,7 +143,7 @@ function saveFiresCache(fires) {
       ].join(','))
     }
     fs.writeFileSync(file, rows.join('\n'), 'utf8')
-    uploadToStorage(file)
+
     pruneFiresCache()
     log('FIRMS', `Cache saved — ${fires.length} hotspots`)
   } catch (err) {
@@ -254,7 +183,9 @@ function loadFiresCache() {
         const lines = fs.readFileSync(path.join(CACHE_DIR, f), 'utf8').trim().split('\n')
         for (const line of lines.slice(1)) {
           const fire = parseFireLine(line)
-          if (fire && fire.id) seen.set(fire.id, fire)
+          if (!fire || !fire.id) continue
+          if (fire.id.startsWith('fire-MTG')) continue   // EUMETSAT removed — skip legacy MTG entries
+          seen.set(fire.id, fire)
         }
       } catch {}
     }
@@ -285,7 +216,6 @@ function saveAirportsCache(airports) {
     }
     const airportFile = path.join(CACHE_DIR, 'airports.csv')
     fs.writeFileSync(airportFile, rows.join('\n'), 'utf8')
-    uploadToStorage(airportFile)
     log('Airports', `Cache saved — ${airports.length} airports`)
   } catch (err) {
     log('Airports', `Cache save error: ${err.message}`, 'error')
@@ -321,5 +251,4 @@ module.exports = {
   saveAircraftCache, loadAircraftCache,
   saveFiresCache,    loadFiresCache,
   saveAirportsCache, loadAirportsCache,
-  uploadAllCsvToStorage, scheduleHourlyStorageSync,
 }
