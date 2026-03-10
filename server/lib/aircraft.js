@@ -121,12 +121,15 @@ function regToCountry(reg) {
 // ─── Middle East bounding box ─────────────────────────────────────────────────
 const ME_BBOX = { latMin: 22, latMax: 42, lonMin: 29, lonMax: 60 }
 
-function parseAirplanesLive(ac) {
+function parseAirplanesLive(ac, serverNow) {
   const lon = ac.lon
   const lat = ac.lat
   if (lon == null || lat == null) return null
   if (lat < ME_BBOX.latMin || lat > ME_BBOX.latMax) return null
   if (lon < ME_BBOX.lonMin || lon > ME_BBOX.lonMax) return null
+
+  // seen_pos = seconds since last position update from this aircraft
+  const seenPos = typeof ac.seen_pos === 'number' ? ac.seen_pos : null
 
   const icao24   = (ac.hex || '').trim().toLowerCase()
   const callsign = (ac.flight || '').trim()
@@ -150,16 +153,24 @@ function parseAirplanesLive(ac) {
     originCountry:  regToCountry(ac.r) || ac.ownOp || '',
     squawk:         ac.squawk || '',
     positionSource: 'ADS-B',
+    posAge:         seenPos,  // seconds since last position (null = unknown)
   }
 }
+
+const STALE_THRESHOLD_SEC = 120  // position older than 2min = stale, drop it
 
 async function fetchAirplanesLive() {
   const res = await axios.get(AIRPLANESLIVE_URL, { timeout: 20000 })
   if (!res.data?.ac?.length) throw new Error('No aircraft in response')
-  return res.data.ac
-    .map(parseAirplanesLive)
+  const serverNow = res.data.now || (Date.now() / 1000)
+  const all = res.data.ac
+    .map(ac => parseAirplanesLive(ac, serverNow))
     .filter(Boolean)
     .filter(ac => !ac.onGround)
+  const fresh = all.filter(ac => ac.posAge === null || ac.posAge <= STALE_THRESHOLD_SEC)
+  const staleCount = all.length - fresh.length
+  if (staleCount > 0) log('OpenSky', `[airplanes.live] Filtered ${staleCount} stale aircraft (posAge > ${STALE_THRESHOLD_SEC}s)`)
+  return fresh
 }
 
 // ─── OpenSky Network REST API ─────────────────────────────────────────────────
@@ -267,7 +278,7 @@ function classifyMilitary(icao24, callsign) {
 
 // ─── OpenSky state vector parser ──────────────────────────────────────────────
 // Field indices per OpenSky API §2.1
-function parseStateVector(sv) {
+function parseStateVector(sv, fetchTime) {
   const lon = sv[5]
   const lat = sv[6]
   if (lon == null || lat == null) return null
@@ -276,6 +287,11 @@ function parseStateVector(sv) {
   const callsign = (sv[1] || '').trim()
   const baroM    = sv[7]
   const velMs    = sv[9]
+
+  // sv[3] = time_position (unix epoch seconds of last position report)
+  const timePos = sv[3]
+  const now     = fetchTime || Math.floor(Date.now() / 1000)
+  const posAge  = (timePos != null && now) ? Math.max(0, now - timePos) : null
 
   const militaryStatus = classifyMilitary(icao24, callsign)
   return {
@@ -294,6 +310,7 @@ function parseStateVector(sv) {
     originCountry:  sv[2] || '',
     squawk:         sv[14] || '',
     positionSource: ['ADS-B', 'ASTERIX', 'MLAT', 'FLARM'][sv[16]] || 'UNKNOWN',
+    posAge,         // seconds since last position report
   }
 }
 
@@ -382,9 +399,13 @@ async function fetchAircraft() {
 
     if (process.env.SAVE_OPENSKY_CSV === 'true') saveOpenSkyCSV(res.data.states)
 
-    const parsed = process.env.SAVE_OPENSKY_CSV === 'true'
+    const fetchTime = res.data.time || Math.floor(Date.now() / 1000)
+    const allParsed = process.env.SAVE_OPENSKY_CSV === 'true'
       ? loadLatestOpenSkyCSV()
-      : res.data.states.map(parseStateVector).filter(Boolean).filter(ac => !ac.onGround)
+      : res.data.states.map(sv => parseStateVector(sv, fetchTime)).filter(Boolean).filter(ac => !ac.onGround)
+    const parsed = allParsed.filter(ac => ac.posAge === null || ac.posAge <= STALE_THRESHOLD_SEC)
+    const staleCount = allParsed.length - parsed.length
+    if (staleCount > 0) log('OpenSky', `Filtered ${staleCount} stale aircraft (posAge > ${STALE_THRESHOLD_SEC}s)`)
 
     saveAircraftCache(parsed)
     saveAircraftToFirestore(parsed).catch(err =>
