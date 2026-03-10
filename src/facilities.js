@@ -84,6 +84,7 @@ export const AIRPORT_STATUS = {
   OEJN: { status: 'OPEN', note: '' },  // Jeddah JED
   OERK: { status: 'OPEN', note: '' },  // Riyadh RUH
   OEDF: { status: 'OPEN', note: '' },  // Dammam DMM
+  OEAH: { status: 'OPEN', note: '' },  // Al-Ahsa HOF
   // Kuwait
   OKBK: { status: 'OPEN', note: '' },  // Kuwait KWI
   // Qatar

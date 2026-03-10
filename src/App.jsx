@@ -9,13 +9,13 @@ import { preloadAllFlags } from './flags.js'
 import { loadMapIcons } from './icons.js'
 import { generateAircraft, generateFires, tickAircraft, tickFires } from './mock.js'
 import * as topojson from 'topojson-client'
-import countriesTopo from 'world-atlas/countries-110m.json'
+import countriesTopo from 'world-atlas/countries-50m.json'
 import { getFilteredAircraft, getFilteredFires, toGeoJSONAircraft, toGeoJSONFires, toGeoJSONBases, toGeoJSONEmbassies } from './data.js'
 import { buildAircraftPopupHTML, buildFirePopupHTML, buildFireClusterPopupHTML, buildAirportPopupHTML, buildBasePopupHTML, buildEmbassyPopupHTML } from './popups.js'
 import { MILITARY_BASES, EMBASSIES, EMERGENCY_CONTACTS, AIRPORT_STATUS as DEFAULT_AIRPORT_STATUS, REGION_COUNTRY, SHELTER_GUIDE, buildIcaoToFir, FIR_TO_ISO } from './facilities.js'
 import { computeProximityAlerts } from './alerts.js'
 
-// ─── Country polygons (Natural Earth 50m via world-atlas) ──────────────────
+// ─── Country polygons (Natural Earth 50m) ──────────────────────────────────
 const ISO_NUMERIC_TO_FIR = {
   '784': 'UAE', '682': 'SAUDI', '414': 'KUWAIT', '634': 'QATAR', '048': 'BAHRAIN',
   '512': 'OMAN', '368': 'IRAQ', '364': 'IRAN', '400': 'JORDAN', '422': 'LEBANON',
@@ -152,12 +152,11 @@ export default function App() {
     const closedFirs = new Set(), restrictedFirs = new Set()
     for (const [fir, c] of Object.entries(firCounts)) {
       if (c.total === 0) continue
-      const nonOpenPct = (c.closed + c.restricted) / c.total
       const hasOpen = c.total - c.closed - c.restricted > 0
-      if (nonOpenPct >= 0.2 && !hasOpen) {
-        closedFirs.add(fir)           // ≥20% non-open AND no open airports → red
-      } else if (nonOpenPct >= 0.2 && hasOpen) {
-        restrictedFirs.add(fir)       // ≥20% non-open BUT has open → amber
+      if (c.closed > 0 && !hasOpen) {
+        closedFirs.add(fir)           // all non-open + has CLOSED → red
+      } else if (c.closed > 0 || c.restricted > 0) {
+        restrictedFirs.add(fir)       // any CLOSED or RESTRICTED → amber
       }
     }
     // Update country polygon overlay using Natural Earth boundaries

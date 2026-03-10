@@ -19,6 +19,8 @@ const { fetchAirports }                           = require('./lib/airports')
 const { fetchAircraft }                           = require('./lib/aircraft')
 const { fetchFIRMS, deduplicateFires }             = require('./lib/fires')
 const { fetchAirspaceStatus, getCachedAirspaceStatus }  = require('./lib/notam')
+const { fetchWeather, getCachedWeather }                = require('./lib/weather')
+const { runAnalytics, getAnalytics, getStatsHistory }   = require('./lib/analytics')
 
 // ─── Express + Socket.io ──────────────────────────────────────────────────────
 
@@ -46,6 +48,7 @@ let aircraftData   = loadAircraftCache()
 let fireData       = loadFiresCache()
 let airportData    = loadAirportsCache()
 let airspaceStatus = getCachedAirspaceStatus() || null   // load from CSV cache on boot
+let weatherData    = getCachedWeather() || null
 const debugLog     = []     // 최근 에러/이벤트 캡쳐 (최대 50개)
 function dlog(msg) { debugLog.push(`${new Date().toISOString()} ${msg}`); if (debugLog.length > 50) debugLog.shift() }
 
@@ -115,14 +118,23 @@ function startPollingCycles() {
     }, next)
   }
 
+  const wxInt = parseInt(process.env.WEATHER_INTERVAL_MS) || 300_000
+  const anInt = parseInt(process.env.ANALYTICS_INTERVAL_MS) || 1_000
+
   doFetchAirports().catch(e => dlog(`airports err: ${e.message}`))
   doFetchAircraft().catch(e => dlog(`aircraft err: ${e.message}`))
   doFetchFIRMS().catch(e => dlog(`fires err: ${e.message}`))
   doFetchAirspace().catch(e => dlog(`airspace err: ${e.message}`))
+  doFetchWeather().catch(e => dlog(`weather err: ${e.message}`))
 
   schedule(doFetchAircraft, acInt, 'OpenSky')
   schedule(doFetchFIRMS, fiInt, 'FIRMS')
   schedule(doFetchAirspace, asInt, 'Airspace')
+  schedule(doFetchWeather, wxInt, 'Weather')
+
+  // Analytics tick — runs every 10s, CPU-intensive (geofencing, separation, trajectories)
+  setInterval(doAnalyticsTick, anInt)
+  log('System', `Analytics engine started (every ${anInt / 1000}s)`)
 }
 
 async function doFetchAircraft() {
@@ -178,6 +190,33 @@ async function doFetchAirspace() {
   }
 }
 
+async function doFetchWeather() {
+  try {
+    const data = await fetchWeather()
+    if (data) {
+      weatherData = data
+      const count = data.stations ? Object.keys(data.stations).length : 0
+      const bytes = (JSON.stringify(data).length / 1024).toFixed(1)
+      log('Socket', `emit weather:update → ${count} stations (${bytes}KB) → ${io.engine.clientsCount} clients`)
+      io.emit('weather:update', weatherData)
+      dlog(`weather fetch: ${count} stations`)
+    }
+  } catch (err) {
+    dlog(`weather fetch ERROR: ${err.message}`)
+  }
+}
+
+function doAnalyticsTick() {
+  try {
+    const result = runAnalytics(aircraftData)
+    if (result && io.engine.clientsCount > 0) {
+      io.emit('analytics:update', result)
+    }
+  } catch (err) {
+    dlog(`analytics ERROR: ${err.message}`)
+  }
+}
+
 // ─── Socket.io 이벤트 및 브로드캐스트 ───────────────────────────────────────────
 
 // 안전망 브로드캐스트 — fetch 주기에서 이미 push하므로 여기선 긴 주기(5분)로 보험용
@@ -209,6 +248,9 @@ io.on('connection', (socket) => {
     socket.emit('aircraft:update', aircraftData)
     socket.emit('fires:update', fireData)
     if (airspaceStatus) socket.emit('airspace:update', airspaceStatus)
+    if (weatherData) socket.emit('weather:update', weatherData)
+    const analytics = getAnalytics()
+    if (analytics) socket.emit('analytics:update', analytics)
 
     if (airportData.length === 0 && !fetchLock.airports) {
       fetchLock.airports = true
@@ -232,7 +274,13 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     uptime: Math.floor(process.uptime()),
     connections: io.engine.clientsCount,
-    counts: { aircraft: aircraftData.length, fires: fireData.length, airspaceTracked: airspaceStatus ? Object.keys(airspaceStatus).length : 0 },
+    counts: {
+      aircraft: aircraftData.length,
+      fires: fireData.length,
+      airspaceTracked: airspaceStatus ? Object.keys(airspaceStatus).length : 0,
+      weatherStations: weatherData?.stations ? Object.keys(weatherData.stations).length : 0,
+      analyticsTracked: getAnalytics()?.tracked || 0,
+    },
   })
 })
 
@@ -240,5 +288,8 @@ app.get('/api/aircraft',    (req, res) => res.json(aircraftData))
 app.get('/api/fires',       (req, res) => res.json(fireData))
 app.get('/api/airports/me', (req, res) => res.json(airportData))
 app.get('/api/airspace',    (req, res) => res.json(airspaceStatus || {}))
+app.get('/api/weather',     (req, res) => res.json(weatherData || {}))
+app.get('/api/analytics',   (req, res) => res.json(getAnalytics() || {}))
+app.get('/api/stats',       (req, res) => res.json(getStatsHistory()))
 
 bootstrap()
