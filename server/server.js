@@ -229,7 +229,24 @@ io.on('connection', (socket) => {
 
 // ─── REST API ────────────────────────────────────────────────────────────────
 
-app.get('/api/health', (req, res) => {
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    connections: io.engine.clientsCount,
+    counts: {
+      aircraft: aircraftData.length,
+      fires: fireData.length,
+      airspaceTracked: airspaceStatus ? Object.keys(airspaceStatus).length : 0,
+    },
+    aircraft: aircraftData,
+    fires: fireData,
+    airports: airportData,
+    airspace: airspaceStatus || {},
+  })
+})
+
+app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
@@ -242,9 +259,16 @@ app.get('/api/health', (req, res) => {
   })
 })
 
-app.get('/api/aircraft',    (req, res) => res.json(aircraftData))
-app.get('/api/fires',       (req, res) => res.json(fireData))
-app.get('/api/airports/me', (req, res) => res.json(airportData))
-app.get('/api/airspace',    (req, res) => res.json(airspaceStatus || {}))
+app.get('/aircraft',    (req, res) => res.json(aircraftData))
+app.get('/fires',       (req, res) => res.json(fireData))
+app.get('/airports',    (req, res) => res.json(airportData))
+app.get('/airspace',    (req, res) => res.json(airspaceStatus || {}))
+
+// Legacy /api/* redirects (UptimeRobot pings /api/health)
+app.get('/api/health',       (req, res) => res.redirect(301, '/health'))
+app.get('/api/aircraft',     (req, res) => res.redirect(301, '/aircraft'))
+app.get('/api/fires',        (req, res) => res.redirect(301, '/fires'))
+app.get('/api/airports/me',  (req, res) => res.redirect(301, '/airports'))
+app.get('/api/airspace',     (req, res) => res.redirect(301, '/airspace'))
 
 bootstrap()
