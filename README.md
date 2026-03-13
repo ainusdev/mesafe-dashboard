@@ -74,7 +74,7 @@ npm run dev
 ### Health Check
 
 ```
-GET /api/health
+GET /health
 → { status, uptime, connections, counts: { aircraft, fires } }
 ```
 
@@ -121,7 +121,7 @@ Each fire source runs in parallel with a 45s hard timeout — one slow or failin
 - Cross-source deduplication (~500m proximity)
 
 ### Fire Time Window Filter
-Filter hotspots by acquisition time: **1H / 6H / 12H / 24H**
+Filter hotspots by acquisition time: **6H / 12H / 24H**
 Uses GPU-side `map.setFilter()` for instant response.
 Selection persists across page refreshes.
 
@@ -162,14 +162,16 @@ git push origin main
 
 ## API Endpoints
 
+Base URL: `https://api.mesafe.ainus.dev`
+
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/health` | Server status, uptime, socket connections, data counts |
-| `GET /api/aircraft` | Current aircraft data |
-| `GET /api/fires` | Current fire hotspot data |
-| `GET /api/airports/me` | Middle East airport data |
-| `GET /api/airports?country=XX` | Airports by country (AviationStack) |
-| `GET /api/flights?airport=XXX&date=YYYY-MM-DD` | Flights by airport (AviationStack) |
+| `GET /` | Full dashboard data (health + all datasets) |
+| `GET /health` | Server status, uptime, socket connections, data counts |
+| `GET /aircraft` | Current aircraft data |
+| `GET /fires` | Current fire hotspot data |
+| `GET /airports` | Middle East airport data |
+| `GET /airspace` | Airport operational status (FlightAware) |
 
 ### Socket.io Events
 
@@ -179,6 +181,7 @@ git push origin main
 | `aircraft:update` | Server → Client | Aircraft position update |
 | `fires:update` | Server → Client | Fire hotspot update |
 | `airports:update` | Server → Client | Airport data update |
+| `airspace:update` | Server → Client | Airport operational status update |
 
 ---
 
